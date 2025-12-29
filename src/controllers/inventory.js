@@ -13,8 +13,8 @@ const vs = require('fs-extra')
 const { spawn } = require('child_process')
 const path = require('path')
 const { APP_BE } = process.env
-// const pythonPath = 'python'
-const pythonPath = '/usr/bin/python3'
+const pythonPath = 'python'
+// const pythonPath = '/usr/bin/python3'
 const borderStyles = {
   top: { style: 'thin' },
   left: { style: 'thin' },
@@ -529,6 +529,15 @@ module.exports = {
           const cekData = []
           for (let i = 0; i < rowList.length; i++) {
             const dokumen = `assets/masters/${req.files[0].filename}`
+            const findDoc = await report_inven.findOne({
+              where: {
+                [Op.and]: [
+                  { plant: type },
+                  { type: type },
+                  { type: type }
+                ]
+              }
+            })
             const data = {
               name: name,
               type: type,
@@ -538,8 +547,13 @@ module.exports = {
               date_report: date_report,
               user_upload: username
             }
-            const createData = await report_inven.create(data)
-            cekData.push(createData)
+            if (findDoc) {
+              const updateData = await findDoc.update(data)
+              cekData.push(updateData)
+            } else {
+              const createData = await report_inven.create(data)
+              cekData.push(createData)
+            }
           }
           if (cekData.length > 0) {
             return response(res, 'success upload report')

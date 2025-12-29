@@ -1,4 +1,5 @@
-# generate_inventory_report.py - FIXED: Added "Intra Gudang Masuk" and "Intra Gudang" to BS00
+# generate_inventory_report.py - COMPLETE FIXED VERSION
+# Added "Intra Gudang Masuk" to all storage types (GS00, BS00, AI00, TR00)
 # Group MB51 by (Material, Plant, Storage, Movement Type, Movement Type Text)
 # Then map mv_text -> mv_grouping -> determine target column
 # FILTER: Only process GS00, BS00, AI00, TR00, EMPTY_STORAGE
@@ -256,13 +257,13 @@ def main():
             ("GS00", "Pemusnahan"): "Y",
             ("GS00", "Adjustment"): "Z",
             
-            # BS00 - 9 columns (AB to AJ) - ADDED "Intra Gudang Masuk" and "Intra Gudang"
+            # BS00 - 9 columns (AB to AJ)
             ("BS00", "Terima Barang"): "AB",
             ("BS00", "Retur Beli"): "AC",
             ("BS00", "Penjualan"): "AD",
             ("BS00", "Retur Jual"): "AE",
             ("BS00", "Intra Gudang Masuk"): "AF",
-            ("BS00", "Intra Gudang"): "AG",  # NEW COLUMN
+            ("BS00", "Intra Gudang"): "AG",
             ("BS00", "Transfer Stock"): "AH",
             ("BS00", "Pemusnahan"): "AI",
             ("BS00", "Adjustment"): "AJ",
@@ -278,19 +279,20 @@ def main():
             ("AI00", "Pemusnahan"): "AS",
             ("AI00", "Adjustment"): "AT",
             
-            # TR00 - 8 columns (AV to BC)
+            # TR00 - 9 columns (AV to BD)
             ("TR00", "Terima Barang"): "AV",
             ("TR00", "Retur Beli"): "AW",
             ("TR00", "Penjualan"): "AX",
             ("TR00", "Retur Jual"): "AY",
-            ("TR00", "Intra Gudang"): "AZ",
-            ("TR00", "Transfer Stock"): "BA",
-            ("TR00", "Pemusnahan"): "BB",
-            ("TR00", "Adjustment"): "BC",
+            ("TR00", "Intra Gudang Masuk"): "AZ",
+            ("TR00", "Intra Gudang"): "BA",
+            ("TR00", "Transfer Stock"): "BB",
+            ("TR00", "Pemusnahan"): "BC",
+            ("TR00", "Adjustment"): "BD",
             
-            # 641/642 (empty storage) - 2 columns (BE, BF)
-            ("EMPTY_STORAGE", "Intra Gudang"): "BE",  # 641
-            ("EMPTY_STORAGE", "Intra Gudang"): "BF",  # 642
+            # 641/642 (empty storage) - 2 columns (BF, BG)
+            ("EMPTY_STORAGE", "Intra Gudang"): "BF",  # 641
+            ("EMPTY_STORAGE", "Intra Gudang"): "BG",  # 642
         }
         
         log(f"  Created {len(storage_grouping_to_column)} (storage, mv_grouping) -> column mappings")
@@ -554,9 +556,9 @@ def main():
             # Handle empty storage 641/642 separately
             if storage == 'EMPTY_STORAGE':
                 if mv_type == '641':
-                    return 'BE'
-                elif mv_type == '642':
                     return 'BF'
+                elif mv_type == '642':
+                    return 'BG'
             
             # Use storage + mv_grouping mapping
             if pd.notna(mv_grouping):
@@ -618,10 +620,10 @@ def main():
             log(f"    {col}: {column_totals[col]:,.2f}")
         
         # Verify 641/642 specifically
-        be_total = column_totals.get('BE', 0)
         bf_total = column_totals.get('BF', 0)
-        log(f"  BE (641) total: {be_total:,.2f}")
-        log(f"  BF (642) total: {bf_total:,.2f}")
+        bg_total = column_totals.get('BG', 0)
+        log(f"  BF (641) total: {bf_total:,.2f}")
+        log(f"  BG (642) total: {bg_total:,.2f}")
 
         # Merge materials
         log(f"Merging materials from main file and MB51")
@@ -728,12 +730,12 @@ def main():
         ws["G7"] = "Material Description"
         ws["A8"], ws["B8"], ws["C8"], ws["D8"], ws["E8"], ws["F8"] = "Nama Area", "Plant", "Kode Dist", "Profit Center", "Periode", "source data"
         
-        # Row 8 labels - UPDATED for new BS00 layout with "Intra Gudang"
+        # Row 8 labels - UPDATED for new layout
         ws["R8"], ws["S8"], ws["T8"], ws["U8"], ws["V8"], ws["W8"], ws["X8"], ws["Y8"] = "DTB", "BPPR", "LBP", "LBP", "DTB", "BPPR", "ALIH STATUS", "Pemusnahan"
         ws["AB8"], ws["AC8"], ws["AD8"], ws["AE8"], ws["AF8"], ws["AG8"], ws["AH8"], ws["AI8"] = "DTB", "BPPR", "LBP", "LBP", "DTB", "BPPR", "ALIH STATUS", "Pemusnahan"
         ws["AL8"], ws["AM8"], ws["AN8"], ws["AO8"], ws["AP8"], ws["AQ8"], ws["AR8"], ws["AS8"] = "DTB", "BPPR", "LBP", "LBP", "DTB", "BPPR", "ALIH STATUS", "Pemusnahan"
-        ws["AV8"], ws["AW8"], ws["AX8"], ws["AY8"], ws["AZ8"], ws["BA8"], ws["BB8"] = "DTB", "BPPR", "LBP", "LBP", "BPPR", "ALIH STATUS", "Pemusnahan"
-        ws["BE8"], ws["BF8"] = "641", "642"
+        ws["AV8"], ws["AW8"], ws["AX8"], ws["AY8"], ws["AZ8"], ws["BA8"], ws["BB8"], ws["BC8"] = "DTB", "BPPR", "LBP", "LBP", "DTB", "BPPR", "ALIH STATUS", "Pemusnahan"
+        ws["BF8"], ws["BG8"] = "641", "642"
 
         ws.merge_cells("H4:M4")
         ws["H4"] = f"SALDO AWAL {bulan} {tahun}"
@@ -757,7 +759,7 @@ def main():
             ws.cell(row=7, column=col, value="S.Aw").alignment = center
 
         ws["R1"] = "ctrl balance MB51"
-        ws.merge_cells("R5:BG5")
+        ws.merge_cells("R5:BH5")
         ws["R5"] = "SAP - MB51"
         ws["R5"].alignment = center
 
@@ -798,58 +800,58 @@ def main():
             ws[f"{col}7"] = label7
             ws[f"{col}7"].alignment = center
 
-        ws.merge_cells("AV6:BC6")
+        ws.merge_cells("AV6:BD6")
         ws["AV6"] = "TR00"
         ws["AV6"].alignment = center
         tr00_movements = [
             ("AV", "Terima Barang"), ("AW", "Retur Beli"), ("AX", "Penjualan"),
-            ("AY", "Retur Jual"), ("AZ", "Intra Gudang"), ("BA", "Transfer Stock"),
-            ("BB", "Pemusnahan"), ("BC", "Adjustment")
+            ("AY", "Retur Jual"), ("AZ", "Intra Gudang Masuk"), ("BA", "Intra Gudang"),
+            ("BB", "Transfer Stock"), ("BC", "Pemusnahan"), ("BD", "Adjustment")
         ]
         for col, label7 in tr00_movements:
             ws[f"{col}7"] = label7
             ws[f"{col}7"].alignment = center
 
-        ws.merge_cells("BE6:BG6")
-        ws["BE6"] = "641 dan 642 tanpa sloc"
-        ws["BE6"].alignment = center
-        ws["BE7"], ws["BF7"], ws["BG7"] = "Intra Gudang", "Intra Gudang", "CEK"
-        ws["BH3"], ws["BH4"] = "-->stock in transit", "jika selisih cek ke MB5T"
+        ws.merge_cells("BF6:BH6")
+        ws["BF6"] = "641 dan 642 tanpa sloc"
+        ws["BF6"].alignment = center
+        ws["BF7"], ws["BG7"], ws["BH7"] = "Intra Gudang", "Intra Gudang", "CEK"
+        ws["BI3"], ws["BI4"] = "-->stock in transit", "jika selisih cek ke MB5T"
 
         # END STOCK
-        ws.merge_cells("BJ4:BO4")
-        ws["BJ4"] = f"END STOCK {prev_month} {prev_year}"
-        ws["BJ4"].alignment = center
-        ws.merge_cells("BJ5:BL5")
-        ws["BJ5"] = "SALDO AKHIR"
-        ws["BJ5"].alignment = center
-        ws.merge_cells("BM5:BO5")
-        ws["BM5"] = "SAP - MB5B"
-        ws["BM5"].alignment = center
-        ws["BP5"] = "DIFF"
-        ws["BP5"].alignment = center
+        ws.merge_cells("BK4:BP4")
+        ws["BK4"] = f"END STOCK {prev_month} {prev_year}"
+        ws["BK4"].alignment = center
+        ws.merge_cells("BK5:BM5")
+        ws["BK5"] = "SALDO AKHIR"
+        ws["BK5"].alignment = center
+        ws.merge_cells("BN5:BP5")
+        ws["BN5"] = "SAP - MB5B"
+        ws["BN5"].alignment = center
+        ws["BQ5"] = "DIFF"
+        ws["BQ5"].alignment = center
 
-        ws["BJ6"], ws["BK6"], ws["BL6"] = "GS00", "BS00", "Grand Total"
-        ws["BM6"], ws["BN6"], ws["BO6"] = "GS", "BS", "Grand Total"
-        ws["BP6"], ws["BQ6"], ws["BR6"] = "GS", "BS", "Grand Total"
+        ws["BK6"], ws["BL6"], ws["BM6"] = "GS00", "BS00", "Grand Total"
+        ws["BN6"], ws["BO6"], ws["BP6"] = "GS", "BS", "Grand Total"
+        ws["BQ6"], ws["BR6"], ws["BS6"] = "GS", "BS", "Grand Total"
 
-        for col in range(62, 71):
+        for col in range(63, 72):
             ws.cell(row=6, column=col).alignment = center
             ws.cell(row=7, column=col, value="S.Ak").alignment = center
 
-        ws["BS7"] = "CEK SELISIH VS BULAN LALU"
-        ws["BT7"] = "kalo ada selisih atas inputan LOG1, LOG2 -> konfirmasi pa Reza utk diselesaikan"
+        ws["BT7"] = "CEK SELISIH VS BULAN LALU"
+        ws["BU7"] = "kalo ada selisih atas inputan LOG1, LOG2 -> konfirmasi pa Reza utk diselesaikan"
 
-        ws.merge_cells("BU5:BW5")
-        ws["BU5"] = "STOCK - EDS"
-        ws["BU5"].alignment = center
-        ws["BX5"] = "DIFF"
-        ws["BX5"].alignment = center
+        ws.merge_cells("BV5:BX5")
+        ws["BV5"] = "STOCK - EDS"
+        ws["BV5"].alignment = center
+        ws["BY5"] = "DIFF"
+        ws["BY5"].alignment = center
 
-        ws["BU6"], ws["BV6"], ws["BW6"] = "GS", "BS", "Grand Total"
-        ws["BX6"], ws["BY6"], ws["BZ6"] = "GS", "BS", "Grand Total"
+        ws["BV6"], ws["BW6"], ws["BX6"] = "GS", "BS", "Grand Total"
+        ws["BY6"], ws["BZ6"], ws["CA6"] = "GS", "BS", "Grand Total"
 
-        for col in range(73, 79):
+        for col in range(74, 80):
             ws.cell(row=6, column=col).alignment = center
             ws.cell(row=7, column=col, value="S.Ak").alignment = center
 
@@ -860,12 +862,12 @@ def main():
         
         num_materials = len(grouped_materials)
         
-        # List of all target columns with new layout
+        # List of all target columns with new layout (TR00 now has 9 columns)
         all_target_columns = ["R", "S", "T", "U", "V", "W", "X", "Y", "Z",
                               "AB", "AC", "AD", "AE", "AF", "AG", "AH", "AI", "AJ",
                               "AL", "AM", "AN", "AO", "AP", "AQ", "AR", "AS", "AT",
-                              "AV", "AW", "AX", "AY", "AZ", "BA", "BB", "BC",
-                              "BE", "BF"]
+                              "AV", "AW", "AX", "AY", "AZ", "BA", "BB", "BC", "BD",
+                              "BF", "BG"]
         
         for idx in range(num_materials):
             if idx % 100 == 0:
@@ -928,56 +930,56 @@ def main():
                 for target_col in all_target_columns:
                     ws.cell(row=write_row, column=get_column_index(target_col), value=0)
 
-            # BG formula (check) - V vs BE vs BF
-            bg9_formula = f"=V{write_row}-BE{write_row}-BF{write_row}"
-            ws.cell(row=write_row, column=get_column_index("BG"), value=bg9_formula)
+            # BH formula (check) - V vs BF vs BG (updated column references)
+            bh9_formula = f"=V{write_row}-BF{write_row}-BG{write_row}"
+            ws.cell(row=write_row, column=get_column_index("BH"), value=bh9_formula)
 
-            # END STOCK formulas
-            bj9_formula = f"=H{write_row}+SUM(R{write_row}:Z{write_row})+SUM(AL{write_row}:BC{write_row})"
-            bk9_formula = f"=I{write_row}+SUM(AB{write_row}:AJ{write_row})"
-            bl9_formula = f"=BJ{write_row}+BK{write_row}"
+            # END STOCK formulas (updated column references)
+            bk9_formula = f"=H{write_row}+SUM(R{write_row}:Z{write_row})+SUM(AL{write_row}:BD{write_row})"
+            bl9_formula = f"=I{write_row}+SUM(AB{write_row}:AJ{write_row})"
+            bm9_formula = f"=BK{write_row}+BL{write_row}"
             
-            ws.cell(row=write_row, column=get_column_index("BJ"), value=bj9_formula)
             ws.cell(row=write_row, column=get_column_index("BK"), value=bk9_formula)
             ws.cell(row=write_row, column=get_column_index("BL"), value=bl9_formula)
+            ws.cell(row=write_row, column=get_column_index("BM"), value=bm9_formula)
 
-            # SAP - MB5B
-            bm9 = sheet_cache.get_mb5b(material, plant, "GS")
-            bn9 = sheet_cache.get_mb5b(material, plant, "BS")
-            bo9_formula = f"=SUM(BM{write_row}:BN{write_row})"
+            # SAP - MB5B (updated column references)
+            bn9 = sheet_cache.get_mb5b(material, plant, "GS")
+            bo9 = sheet_cache.get_mb5b(material, plant, "BS")
+            bp9_formula = f"=SUM(BN{write_row}:BO{write_row})"
             
-            ws.cell(row=write_row, column=get_column_index("BM"), value=bm9)
             ws.cell(row=write_row, column=get_column_index("BN"), value=bn9)
-            ws.cell(row=write_row, column=get_column_index("BO"), value=bo9_formula)
-
-            # DIFF
-            bp9_formula = f"=BJ{write_row}-BM{write_row}"
-            bq9_formula = f"=BK{write_row}-BN{write_row}"
-            br9_formula = f"=BP{write_row}+BQ{write_row}"
-            
+            ws.cell(row=write_row, column=get_column_index("BO"), value=bo9)
             ws.cell(row=write_row, column=get_column_index("BP"), value=bp9_formula)
+
+            # DIFF (updated column references)
+            bq9_formula = f"=BK{write_row}-BN{write_row}"
+            br9_formula = f"=BL{write_row}-BO{write_row}"
+            bs9_formula = f"=BQ{write_row}+BR{write_row}"
+            
             ws.cell(row=write_row, column=get_column_index("BQ"), value=bq9_formula)
             ws.cell(row=write_row, column=get_column_index("BR"), value=br9_formula)
-
-            bs9_formula = f"=P{write_row}-BR{write_row}"
             ws.cell(row=write_row, column=get_column_index("BS"), value=bs9_formula)
 
-            # STOCK - EDS
-            bu9 = sheet_cache.get_eds(material, plant, "GS")
-            bv9 = sheet_cache.get_eds(material, plant, "BS")
-            bw9_formula = f"=BU{write_row}+BV{write_row}"
-            
-            ws.cell(row=write_row, column=get_column_index("BU"), value=bu9)
-            ws.cell(row=write_row, column=get_column_index("BV"), value=bv9)
-            ws.cell(row=write_row, column=get_column_index("BW"), value=bw9_formula)
+            bt9_formula = f"=P{write_row}-BS{write_row}"
+            ws.cell(row=write_row, column=get_column_index("BT"), value=bt9_formula)
 
-            bx9_formula = f"=BM{write_row}-BU{write_row}"
-            by9_formula = f"=BN{write_row}-BV{write_row}"
-            bz9_formula = f"=BX{write_row}+BY{write_row}"
+            # STOCK - EDS (updated column references)
+            bv9 = sheet_cache.get_eds(material, plant, "GS")
+            bw9 = sheet_cache.get_eds(material, plant, "BS")
+            bx9_formula = f"=BV{write_row}+BW{write_row}"
             
+            ws.cell(row=write_row, column=get_column_index("BV"), value=bv9)
+            ws.cell(row=write_row, column=get_column_index("BW"), value=bw9)
             ws.cell(row=write_row, column=get_column_index("BX"), value=bx9_formula)
+
+            by9_formula = f"=BN{write_row}-BV{write_row}"
+            bz9_formula = f"=BO{write_row}-BW{write_row}"
+            ca9_formula = f"=BY{write_row}+BZ{write_row}"
+            
             ws.cell(row=write_row, column=get_column_index("BY"), value=by9_formula)
             ws.cell(row=write_row, column=get_column_index("BZ"), value=bz9_formula)
+            ws.cell(row=write_row, column=get_column_index("CA"), value=ca9_formula)
 
             write_row += 1
 
@@ -987,12 +989,12 @@ def main():
         log("Writing formulas...")
         last_row = write_row - 1
         
-        # sum_columns with new layout
+        # sum_columns with updated layout (TR00 now has 9 columns, 641/642 shifted)
         sum_columns = ["R", "S", "T", "U", "V", "W", "X", "Y", "Z",
                       "AB", "AC", "AD", "AE", "AF", "AG", "AH", "AI", "AJ",
                       "AL", "AM", "AN", "AO", "AP", "AQ", "AR", "AS", "AT",
-                      "AV", "AW", "AX", "AY", "AZ", "BA", "BB", "BC",
-                      "BE", "BF", "BG"]
+                      "AV", "AW", "AX", "AY", "AZ", "BA", "BB", "BC", "BD",
+                      "BF", "BG", "BH"]
         
         for col in sum_columns:
             ws[f"{col}3"] = f"=SUM({col}9:{col}{last_row})"
@@ -1004,22 +1006,22 @@ def main():
         else:
             mb51_total_amount = df_mb51_filtered['amount'].sum()
         
-        sum_r3_bf3 = sum([totals.get(col, 0) for col in sum_columns if col != "BG"])
+        sum_r3_bf3 = sum([totals.get(col, 0) for col in sum_columns if col != "BH"])
         s1_value = round(mb51_total_amount - sum_r3_bf3, 2)
         
         ws["S1"] = s1_value
         log(f"  S1 = {s1_value:.2f}")
         log(f"  S1 breakdown: MB51_total={mb51_total_amount:,.2f} - Columns_sum={sum_r3_bf3:,.2f}")
         
-        # BA2 formula (Transfer Stock total) - X, AH, AR, BA
-        ws["BA2"] = "=X3+AH3+AR3+BA3"
+        # BB2 formula (Transfer Stock total) - X, AH, AR, BB (updated from BA to BB)
+        ws["BB2"] = "=X3+AH3+AR3+BB3"
         
-        # BO2 calculation
-        sum_bo = 0.0
+        # BP2 calculation (updated from BO2)
+        sum_bp = 0.0
         for row in range(9, write_row):
-            cell_val = ws.cell(row=row, column=get_column_index("BO")).value
+            cell_val = ws.cell(row=row, column=get_column_index("BP")).value
             if isinstance(cell_val, (int, float)):
-                sum_bo += cell_val
+                sum_bp += cell_val
         
         sum_mb5b_pq = 0.0
         if '13. MB5B' in sheets_dict:
@@ -1032,9 +1034,9 @@ def main():
             except Exception as e:
                 log(f"  Warning: {str(e)}")
         
-        bo2_value = round(sum_bo - sum_mb5b_pq, 2)
-        ws["BO2"] = bo2_value
-        log(f"  BO2 = {bo2_value:.2f}")
+        bp2_value = round(sum_bp - sum_mb5b_pq, 2)
+        ws["BP2"] = bp2_value
+        log(f"  BP2 = {bp2_value:.2f}")
 
         # Formatting
         log("Formatting...")
@@ -1045,8 +1047,8 @@ def main():
         ws.column_dimensions['AA'].width = 2
         ws.column_dimensions['AK'].width = 2
         ws.column_dimensions['AU'].width = 2
-        ws.column_dimensions['BD'].width = 2
-        ws.column_dimensions['BI'].width = 4
+        ws.column_dimensions['BE'].width = 2
+        ws.column_dimensions['BJ'].width = 4
 
         ws.freeze_panes = "H9"
 
@@ -1084,7 +1086,7 @@ def main():
         
         print(json.dumps(result))
         sys.stdout.flush()
-        log("✓ Report completed successfully with Intra Gudang Masuk and Intra Gudang in BS00!")
+        log("✓ Report completed successfully with Intra Gudang Masuk in all storage types (GS00, BS00, AI00, TR00)!")
 
     except Exception as e:
         tb = traceback.format_exc()
