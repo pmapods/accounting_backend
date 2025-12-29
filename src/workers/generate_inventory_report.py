@@ -1086,7 +1086,7 @@ def main():
         
         print(json.dumps(result))
         sys.stdout.flush()
-        log("✓ Report completed successfully with Intra Gudang Masuk in all storage types (GS00, BS00, AI00, TR00)! king")
+        log("✓ Report completed successfully with Intra Gudang Masuk in all storage types (GS00, BS00, AI00, TR00)!")
 
     except Exception as e:
         tb = traceback.format_exc()
