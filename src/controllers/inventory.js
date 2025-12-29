@@ -532,9 +532,9 @@ module.exports = {
             const findDoc = await report_inven.findOne({
               where: {
                 [Op.and]: [
-                  { plant: type },
+                  { plant: rowList[i] },
                   { type: type },
-                  { type: type }
+                  { date_report: { [Op.like]: `%${moment(date_report).format('YYYY-MM')}%` } },
                 ]
               }
             })
