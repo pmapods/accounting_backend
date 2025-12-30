@@ -14,6 +14,7 @@ route.get('/active', trans.getAllActivity)
 route.patch('/edit/:id', trans.editAccessActive)
 route.get('/notif', trans.getNotif)
 route.get('/test', trans.testGetDocument)
+route.post('/upload-multiple/:idAct', trans.uploadDocumentMultiple)
 
 // download document
 route.get('/download/document', trans.downloadDocuments)

@@ -1,0 +1,17 @@
+{
+    "extends": [
+        "standard"
+    ],
+    "env": {
+        "node": true,
+        "es2021": true
+    },
+    "rules": {
+        "indent": [
+            "error",
+            2
+        ],
+        "no-tabs": "error",
+        "camelcase": "off"
+    }
+}

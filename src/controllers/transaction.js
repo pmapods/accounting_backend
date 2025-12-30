@@ -4,6 +4,7 @@ const { Op, QueryTypes } = require('sequelize')
 const response = require('../helpers/response')
 const joi = require('joi')
 const uploadHelper = require('../helpers/upload')
+const uploadHelperMultiple = require('../helpers/uploadMultiple')
 const multer = require('multer')
 const fs = require('fs')
 // const vs = require('fs-extra')
@@ -953,7 +954,7 @@ module.exports = {
       const getTimeRange = (timeValue, tipeValue) => {
         if (tipeValue === 'monthly') {
           return {
-            start: timeValue 
+            start: timeValue
               ? moment(timeValue).startOf('month').format('YYYY-MM-DD')
               : moment().startOf('month').format('YYYY-MM-DD'),
             end: timeValue
@@ -976,7 +977,7 @@ module.exports = {
       // Handle level 4 and 5 (SA and Kasir)
       if (level === 4 || level === 5) {
         const userType = level === 4 ? 'sa' : 'kasir'
-        
+
         // Get depo info
         const depoQuery = `
           SELECT status_depo, kode_plant 
@@ -996,7 +997,7 @@ module.exports = {
         // Get documents with proper limit for level 4
         const documentLimit = level === 4 ? 100 : limit
         const documentOffset = level === 4 ? (page - 1) * 100 : offset
-        
+
         const documentsQuery = `
           SELECT * FROM documents
           WHERE nama_dokumen LIKE ?
@@ -1068,7 +1069,7 @@ module.exports = {
           if (tipe === 'daily') {
             const monthStart = moment().startOf('month').format('YYYY-MM-DD')
             const monthEnd = moment().add(1, 'month').startOf('month').format('YYYY-MM-DD')
-            
+
             await sequelize.query(`
               UPDATE activities 
               SET access = 'lock'
@@ -1172,7 +1173,7 @@ module.exports = {
         // Fetch SA and Kasir data in parallel
         const fetchActivityData = async (userType) => {
           const results = []
-          
+
           for (const kodeDepo of kodeDepos) {
             // Get depo with single activity (limit 1)
             const depoQuery = `
@@ -1192,7 +1193,7 @@ module.exports = {
               WHERE d.kode_plant = ?
               LIMIT 1
             `
-            
+
             const [depoData] = await sequelize.query(depoQuery, {
               replacements: [kodeDepo],
               type: QueryTypes.SELECT
@@ -1222,7 +1223,7 @@ module.exports = {
               ORDER BY a.createdAt DESC
               LIMIT 1
             `
-            
+
             const [activityData] = await sequelize.query(activityQuery, {
               replacements: [
                 kodeDepo,
@@ -1252,7 +1253,7 @@ module.exports = {
               WHERE p.activityId = ?
               LIMIT 50
             `
-            
+
             const pathsData = await sequelize.query(pathsQuery, {
               replacements: [activityData.id],
               type: QueryTypes.SELECT
@@ -1277,7 +1278,7 @@ module.exports = {
                 AND doc.uploadedBy = ?
                 AND doc.status != 'inactive'
             `
-            
+
             const documentsData = await sequelize.query(documentsQuery, {
               replacements: [
                 depoData.status_depo,
@@ -1300,7 +1301,7 @@ module.exports = {
 
             results.push(combinedData)
           }
-          
+
           return results
         }
 
@@ -1313,7 +1314,6 @@ module.exports = {
 
         return response(res, 'list dokumen', { results, sa, kasir, all, pageInfo })
       }
-
     } catch (error) {
       console.error('Dashboard error:', error)
       return response(res, error.message, {}, 500, false)
@@ -1601,6 +1601,169 @@ module.exports = {
           }
         } else {
           return response(res, "you can't edit dokumen", {}, 404, false)
+        }
+      } catch (error) {
+        return response(res, error.message, {}, 500, false)
+      }
+    })
+  },
+  uploadDocumentMultiple: async (req, res) => {
+    const idAct = req.params.idAct
+    const level = req.user.level
+    const kode = req.user.kode
+
+    uploadHelperMultiple(req, res, async function (err) {
+      try {
+        if (err instanceof multer.MulterError) {
+          if (err.code === 'LIMIT_UNEXPECTED_FILE' && req.files.length === 0) {
+            return response(res, 'fieldname doesnt match', {}, 500, false)
+          }
+          return response(res, err.message, {}, 500, false)
+        } else if (err) {
+          return response(res, err.message, {}, 401, false)
+        } else {
+          // Validasi jika tidak ada file
+          if (!req.files || req.files.length === 0) {
+            return response(res, 'No files uploaded', {}, 400, false)
+          }
+
+          // Parse listId dari JSON string
+          let listId
+          try {
+            listId = JSON.parse(req.body.listId)
+          } catch (error) {
+            return response(res, 'Invalid listId format', {}, 400, false)
+          }
+
+          // Validasi listId adalah array
+          if (!Array.isArray(listId)) {
+            return response(res, 'listId must be an array', {}, 400, false)
+          }
+
+          // Validasi jumlah file dan listId harus sama
+          if (req.files.length !== listId.length) {
+            return response(res, 'Number of files must match number of document IDs', {}, 400, false)
+          }
+
+          const active = await activity.findByPk(idAct)
+          if (!active) {
+            return response(res, 'Activity not found', {}, 404, false)
+          }
+
+          if (active.access === 'lock') {
+            return response(res, 'Dokumen ini sudah di lock, hubungi spv untuk mengizinkan upload dokumen', {}, 404, false)
+          }
+
+          const tipe = level === 5 ? 'kasir' : 'sa'
+          const uploadedFiles = []
+          const failedUploads = []
+
+          // Loop untuk upload multiple files dengan listId
+          for (let i = 0; i < req.files.length; i++) {
+            const file = req.files[i]
+            const docId = listId[i]
+
+            try {
+              const result = await documents.findByPk(docId)
+              const findPath = await Path.findByPk(docId)
+
+              if (result) {
+                // Determine status based on document type and time
+                let statusDokumen = 1
+                if (result.jenis_dokumen === 'daily') {
+                  const time = await date_clossing.findOne({
+                    where: { jenis: 'daily' }
+                  })
+                  if (moment().format('HH:mm') >= moment(time.time).format('HH:mm')) {
+                    statusDokumen = 4
+                  }
+                } else if (result.jenis_dokumen === 'monthly') {
+                  const time = await date_clossing.findOne({
+                    where: { jenis: 'monthly' }
+                  })
+                  if (moment().format('LL') >= moment(time.day).format('LL')) {
+                    statusDokumen = 4
+                  }
+                }
+
+                const dokumen = `assets/documents/${file.filename}`
+                const send = {
+                  dokumen: result.nama_dokumen,
+                  activityId: idAct,
+                  path: dokumen,
+                  kode_depo: kode,
+                  status_dokumen: statusDokumen
+                }
+
+                const upload = await Path.create(send)
+
+                if (upload) {
+                  const data = {
+                    kode_plant: kode,
+                    reject: 'false',
+                    upload: 'true',
+                    activityId: idAct,
+                    pathId: upload.id,
+                    tipe: tipe
+                  }
+                  await notif.create(data)
+                  uploadedFiles.push({
+                    upload,
+                    fileName: file.originalname,
+                    docId: docId,
+                    documentName: result.nama_dokumen
+                  })
+                } else {
+                  failedUploads.push({
+                    file: file.originalname,
+                    reason: 'Failed to create path record',
+                    docId: docId
+                  })
+                }
+              } else if (findPath) {
+                const active = await activity.findByPk(idAct)
+                const dokumen = `assets/documents/${file.filename}`
+                if (active.access === 'lock') {
+                  return response(res, 'Dokumen ini sudah di lock, hubungi spv untuk mengizinkan upload dokumen', {}, 404, false)
+                } else {
+                  const send = { path: dokumen, status_dokumen: 7 }
+                  await findPath.update(send)
+                  uploadedFiles.push({
+                    findPath,
+                    fileName: file.originalname,
+                    docId: docId,
+                    documentName: findPath.document
+                  })
+                }
+              } else {
+                failedUploads.push({
+                  file: file.originalname,
+                  reason: 'Document not found',
+                  docId: docId
+                })
+              }
+            } catch (error) {
+              failedUploads.push({
+                file: file.originalname,
+                reason: error.message,
+                docId: docId
+              })
+            }
+          }
+
+          if (uploadedFiles.length > 0) {
+            return response(res, 'Upload completed', {
+              uploads: uploadedFiles,
+              failed: failedUploads,
+              summary: {
+                total: req.files.length,
+                success: uploadedFiles.length,
+                failed: failedUploads.length
+              }
+            })
+          } else {
+            return response(res, 'All uploads failed', { failed: failedUploads }, 404, false)
+          }
         }
       } catch (error) {
         return response(res, error.message, {}, 500, false)
@@ -3227,7 +3390,7 @@ module.exports = {
   debugDownload: async (req, res) => {
     try {
       const { startDate, endDate, namaFile } = req.query
-      
+
       if (!startDate || !endDate) {
         return res.status(400).json({
           success: false,
@@ -3256,13 +3419,13 @@ module.exports = {
       `
 
       const replacements = { start, end }
-      
+
       if (namaFile) {
-        sqlQuery += ` AND dokumen LIKE :namaFile`
+        sqlQuery += ' AND dokumen LIKE :namaFile'
         replacements.namaFile = `%${namaFile}%`
       }
 
-      sqlQuery += ` ORDER BY updatedAt DESC LIMIT 10`
+      sqlQuery += ' ORDER BY updatedAt DESC LIMIT 10'
 
       const files = await sequelize.query(sqlQuery, {
         replacements,
@@ -3275,7 +3438,7 @@ module.exports = {
         const originalFileName = path.basename(file.path)
         const sanitizedDokumen = file.dokumen.replace(/[<>:"/\\|?*]/g, '-')
         const newFileName = `${file.kode_depo}-${sanitizedDokumen}-${originalFileName}`
-        
+
         return {
           ...file,
           fileExists: fs.existsSync(filePath),
@@ -3304,7 +3467,6 @@ module.exports = {
           }
         }
       })
-
     } catch (error) {
       return res.status(500).json({
         success: false,
@@ -3317,7 +3479,7 @@ module.exports = {
   downloadDocuments: async (req, res) => {
     try {
       const { startDate, endDate, namaFile } = req.query
-      
+
       // Validasi input
       if (!startDate || !endDate) {
         return res.status(400).json({
@@ -3346,13 +3508,13 @@ module.exports = {
       `
 
       const replacements = { start, end }
-      
+
       if (namaFile) {
-        sqlQuery += ` AND dokumen LIKE :namaFile`
+        sqlQuery += ' AND dokumen LIKE :namaFile'
         replacements.namaFile = `%${namaFile}%`
       }
 
-      sqlQuery += ` ORDER BY updatedAt DESC`
+      sqlQuery += ' ORDER BY updatedAt DESC'
 
       // Execute raw query
       const files = await sequelize.query(sqlQuery, {
@@ -3374,21 +3536,21 @@ module.exports = {
         notFound: 0,
         total: files.length
       }
-      
+
       for (const file of files) {
         const filePath = path.join(__dirname, '../../', file.path)
-        
+
         // Check if file exists
         if (fs.existsSync(filePath)) {
           // Get original filename
           const originalFileName = path.basename(file.path)
-          
+
           // Sanitize dokumen name (remove invalid chars for filename)
           const sanitizedDokumen = file.dokumen.replace(/[<>:"/\\|?*]/g, '-')
-          
+
           // Create new filename: kode_depo-dokumen-originalname
           const newFileName = `${file.kode_depo};${sanitizedDokumen};${moment(file.updatedAt).format('DDMMYYYY')};${originalFileName}`
-          
+
           filesToZip.push({
             path: filePath,
             originalName: file.path,
@@ -3461,12 +3623,12 @@ module.exports = {
       filesToZip.forEach(file => {
         try {
           const folderStructure = `${file.date}/${file.dokumen}`
-          
+
           // PENTING: file.newName adalah nama baru yang akan muncul di dalam zip
-          archive.file(file.path, { 
-            name: `${folderStructure}/${file.newName}` 
+          archive.file(file.path, {
+            name: `${folderStructure}/${file.newName}`
           })
-          
+
           console.log(`Added: ${file.newName}`)
           processedFiles++
         } catch (err) {
@@ -3477,16 +3639,15 @@ module.exports = {
       // Finalize the archive (this triggers the streaming)
       await archive.finalize()
 
-      console.log(`✓ ZIP streamed successfully`)
+      console.log('✓ ZIP streamed successfully')
       console.log(`  - Total in DB: ${fileStats.total}`)
       console.log(`  - Found: ${fileStats.found}`)
       console.log(`  - Not Found: ${fileStats.notFound}`)
       console.log(`  - Zipped: ${processedFiles}`)
       console.log(`  - Size: ${archive.pointer()} bytes`)
-
     } catch (error) {
       console.error('Download error:', error)
-      
+
       if (!res.headersSent) {
         return res.status(500).json({
           success: false,
@@ -3500,39 +3661,43 @@ module.exports = {
     try {
       const kode = req.user.kode
       const level = req.user.level
-      
+
       // Query untuk mendapatkan data statistik per bulan
       const statistics = await Path.findAll({
         where: {
           [Op.and]: [
             level === 5 || level === 4 ? { kode_depo: kode } : { [Op.not]: { id: null } },
-            {createdAt: {
-              [Op.gte]: moment().subtract(6, 'months').startOf('month').toDate()
-            }},
-            {path: {
-              [Op.ne]: null
-            }}
+            {
+              createdAt: {
+                [Op.gte]: moment().subtract(6, 'months').startOf('month').toDate()
+              }
+            },
+            {
+              path: {
+                [Op.ne]: null
+              }
+            }
           ]
         },
         attributes: [
           [sequelize.fn('DATE_FORMAT', sequelize.col('createdAt'), '%Y-%m'), 'month'],
           [sequelize.fn('COUNT', sequelize.col('id')), 'total_upload'],
           // Pending: status 1 dan 2
-          [sequelize.fn('SUM', sequelize.literal("CASE WHEN status_dokumen IN (1, 2) THEN 1 ELSE 0 END")), 'pending'],
+          [sequelize.fn('SUM', sequelize.literal('CASE WHEN status_dokumen IN (1, 2) THEN 1 ELSE 0 END')), 'pending'],
           // Approved: status 3 dan 5
-          [sequelize.fn('SUM', sequelize.literal("CASE WHEN status_dokumen IN (3, 5) THEN 1 ELSE 0 END")), 'approved'],
+          [sequelize.fn('SUM', sequelize.literal('CASE WHEN status_dokumen IN (3, 5) THEN 1 ELSE 0 END')), 'approved'],
           // Rejected: status 0 dan 6
-          [sequelize.fn('SUM', sequelize.literal("CASE WHEN status_dokumen IN (0, 6) THEN 1 ELSE 0 END")), 'rejected'],
+          [sequelize.fn('SUM', sequelize.literal('CASE WHEN status_dokumen IN (0, 6) THEN 1 ELSE 0 END')), 'rejected'],
           // Late Upload: status 4
-          [sequelize.fn('SUM', sequelize.literal("CASE WHEN status_dokumen = 4 THEN 1 ELSE 0 END")), 'late'],
+          [sequelize.fn('SUM', sequelize.literal('CASE WHEN status_dokumen = 4 THEN 1 ELSE 0 END')), 'late'],
           // Revisi: status 7
-          [sequelize.fn('SUM', sequelize.literal("CASE WHEN status_dokumen = 7 THEN 1 ELSE 0 END")), 'revisi']
+          [sequelize.fn('SUM', sequelize.literal('CASE WHEN status_dokumen = 7 THEN 1 ELSE 0 END')), 'revisi']
         ],
         group: ['month'],
         order: [[sequelize.literal('month'), 'ASC']],
         raw: true
       })
-      
+
       return response(res, 'success', { result: statistics })
     } catch (error) {
       return response(res, error.message, {}, 500, false)

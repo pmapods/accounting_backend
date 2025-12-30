@@ -1,4 +1,4 @@
-const { pic, sequelize } = require('../models')
+const { pic, sequelize, depo } = require('../models')
 const joi = require('joi')
 const response = require('../helpers/response')
 const { pagination } = require('../helpers/pagination')
@@ -28,13 +28,13 @@ module.exports = {
         return response(res, 'Error', { error: error.message }, 401, false)
       } else {
         if (level === 1) {
-          const result = await pic.findAll({ 
+          const result = await pic.findAll({
             where: {
               [Op.and]: [
                 { kode_depo: results.kode_depo },
-                { pic: results.pic }  
+                { pic: results.pic }
               ]
-            } 
+            }
           })
           if (result.length > 0) {
             return response(res, 'kode depo already use', {}, 404, false)
@@ -76,7 +76,7 @@ module.exports = {
               where: {
                 [Op.and]: [
                   { kode_depo: results.kode_depo },
-                  { pic: results.pic }  
+                  { pic: results.pic }
                 ],
                 [Op.not]: { id: id }
               }
@@ -369,6 +369,38 @@ module.exports = {
         }
       } else {
         return response(res, 'failed', {}, 404, false)
+      }
+    } catch (error) {
+      return response(res, error.message, {}, 500, false)
+    }
+  },
+  generateSpvPic: async (req, res) => {
+    try {
+      const findPic = await pic.findAll()
+      if (findPic.length > 0) {
+        const cekData = []
+        for (let i = 0; i < findPic.length; i++) {
+          const findDepo = await depo.findOne({
+            where: {
+              kode_depo: findPic[i].kode_depo
+            }
+          })
+          if (findDepo) {
+            const data = {
+              spv: findDepo.nama_pic_2
+            }
+            const findId = await pic.findByPk(findPic[i].id)
+            await findId.update(data)
+            cekData.push(findId)
+          }
+        }
+        if (cekData.length > 0) {
+          return response(res, 'success generate pic and spv', { result: cekData })
+        } else {
+          return response(res, 'failed generate pic and spv', {}, 404, false)
+        }
+      } else {
+        return response(res, 'failed generate pic and spv', {}, 404, false)
       }
     } catch (error) {
       return response(res, error.message, {}, 500, false)
