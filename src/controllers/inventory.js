@@ -302,23 +302,23 @@ module.exports = {
       const { listId } = req.body
       console.log(req.body)
       // if (level === 1) {
-        if (listId !== undefined && listId.length > 0) {
-          const cekData = []
-          for (let i = 0; i < listId.length; i++) {
-            const result = await inventory.findByPk(listId[i])
-            if (result) {
-              await result.destroy()
-              cekData.push(result)
-            }
+      if (listId !== undefined && listId.length > 0) {
+        const cekData = []
+        for (let i = 0; i < listId.length; i++) {
+          const result = await inventory.findByPk(listId[i])
+          if (result) {
+            await result.destroy()
+            cekData.push(result)
           }
-          if (cekData.length > 0) {
-            return response(res, 'success delete inventory', { result: cekData })
-          } else {
-            return response(res, 'inventory not found', {}, 404, false)
-          }
+        }
+        if (cekData.length > 0) {
+          return response(res, 'success delete inventory', { result: cekData })
         } else {
           return response(res, 'inventory not found', {}, 404, false)
         }
+      } else {
+        return response(res, 'inventory not found', {}, 404, false)
+      }
       // } else {
       //   return response(res, "You're not super administrator", {}, 404, false)
       // }
@@ -427,8 +427,8 @@ module.exports = {
       } else {
         page = parseInt(page)
       }
-      const startDate = moment(date).startOf('month').toDate();
-      const endDate = moment(date).endOf('month').toDate();
+      const startDate = moment(date).startOf('month').toDate()
+      const endDate = moment(date).endOf('month').toDate()
       const findInventory = await report_inven.findAndCountAll({
         where: {
           [Op.and]: [
@@ -479,27 +479,27 @@ module.exports = {
       const { listId } = req.body
       console.log(req.body)
       // if (level === 1) {
-        if (listId !== undefined && listId.length > 0) {
-          const cekData = []
-          for (let i = 0; i < listId.length; i++) {
-            const result = await report_inven.findByPk(listId[i])
-            if (result) {
-              // const path = result.path
-              // fs.unlink(path, function (err) {
-              //   console.log('success')
-              // })
-              await result.destroy()
-              cekData.push(result)
-            }
+      if (listId !== undefined && listId.length > 0) {
+        const cekData = []
+        for (let i = 0; i < listId.length; i++) {
+          const result = await report_inven.findByPk(listId[i])
+          if (result) {
+            // const path = result.path
+            // fs.unlink(path, function (err) {
+            //   console.log('success')
+            // })
+            await result.destroy()
+            cekData.push(result)
           }
-          if (cekData.length > 0) {
-            return response(res, 'success delete report inv', { result: cekData })
-          } else {
-            return response(res, 'report inv not found', {}, 404, false)
-          }
+        }
+        if (cekData.length > 0) {
+          return response(res, 'success delete report inv', { result: cekData })
         } else {
           return response(res, 'report inv not found', {}, 404, false)
         }
+      } else {
+        return response(res, 'report inv not found', {}, 404, false)
+      }
       // } else {
       //   return response(res, "You're not super administrator", {}, 404, false)
       // }
@@ -534,7 +534,7 @@ module.exports = {
                 [Op.and]: [
                   { plant: rowList[i] },
                   { type: type },
-                  { date_report: { [Op.like]: `%${moment(date_report).format('YYYY-MM')}%` } },
+                  { date_report: { [Op.like]: `%${moment(date_report).format('YYYY-MM')}%` } }
                 ]
               }
             })
@@ -574,7 +574,6 @@ module.exports = {
             return response(res, 'success upload report')
           }
         }
-        
       } catch (error) {
         return response(res, error.message, {}, 500, false)
       }
@@ -647,13 +646,13 @@ module.exports = {
     try {
       const username = req.user.name
       const { listPlant, date } = req.body
-      
+
       if (date !== undefined && listPlant !== undefined && listPlant.length > 0) {
         const cekGenerate = []
         const cekFalse = []
-        const startDate = moment(date).startOf('month').toDate();
-        const endDate = moment(date).endOf('month').toDate();
-        
+        const startDate = moment(date).startOf('month').toDate()
+        const endDate = moment(date).endOf('month').toDate()
+
         // Ambil master data dari database SEKALI saja (di luar loop)
         const masterInventory = await inventory.findAll()
         const masterMovement = await movement.findAll()
@@ -671,7 +670,7 @@ module.exports = {
           return new Promise(async (resolve, reject) => {
             try {
               const files = await report_inven.findAll({
-                where: { 
+                where: {
                   [Op.and]: [
                     { plant: plant },
                     { date_report: { [Op.between]: [startDate, endDate] } },
@@ -699,12 +698,11 @@ module.exports = {
               console.log(`[${plant}] Starting Python worker...`)
 
               // Debug PATH
-              console.log('=== DEBUG PATH ===');
-              console.log('PATH:', process.env.PATH);
-              console.log('Which python:', require('child_process').execSync('which python || echo "not found"').toString().trim());
-              console.log('==================');
+              console.log('=== DEBUG PATH ===')
+              console.log('PATH:', process.env.PATH)
+              console.log('Which python:', require('child_process').execSync('which python || echo "not found"').toString().trim())
+              console.log('==================')
 
-              
               // Spawn python worker
               const py = spawn(pythonPath, [
                 path.join(__dirname, '../workers/generate_inventory_report.py')
@@ -727,13 +725,13 @@ module.exports = {
 
               let stdoutData = ''
               let stderrData = ''
-              
-              py.stdout.on('data', data => { 
+
+              py.stdout.on('data', data => {
                 stdoutData += data.toString()
                 console.log(`[${plant}] Python stdout:`, data.toString())
               })
-              
-              py.stderr.on('data', data => { 
+
+              py.stderr.on('data', data => {
                 stderrData += data.toString()
                 console.log(`[${plant}] Python stderr:`, data.toString())
               })
@@ -746,7 +744,7 @@ module.exports = {
 
               py.on('close', async (code) => {
                 console.log(`[${plant}] Python process exited with code ${code}`)
-                
+
                 try {
                   if (code === 0) {
                     // Parse JSON from stdout
@@ -754,27 +752,27 @@ module.exports = {
                     if (!jsonMatch) {
                       throw new Error('No JSON found in Python output')
                     }
-                    
+
                     const result = JSON.parse(jsonMatch[0])
-                    
+
                     if (!result.success) {
                       throw new Error(result.error || 'Unknown Python error')
                     }
-                    
+
                     console.log(`[${plant}] Report generated successfully:`, result.output_path)
-                    
+
                     // Update database
-                    await report.update({ 
-                      path: result.output_path, 
+                    await report.update({
+                      path: result.output_path,
                       status: 2, // Success
                       name: `${plant}_output_report_inventory_${result.timestamp}`,
                       date_report: startDate,
                       plant: plant,
                       user_upload: username
                     })
-                    
-                    resolve({ 
-                      success: true, 
+
+                    resolve({
+                      success: true,
                       plant,
                       output_path: result.output_path,
                       rows_written: result.rows_written,
@@ -783,7 +781,7 @@ module.exports = {
                   } else {
                     // Python exited with error
                     let errorMsg = 'Python process failed'
-                    
+
                     try {
                       const jsonMatch = stdoutData.match(/\{[\s\S]*\}/)
                       if (jsonMatch) {
@@ -794,7 +792,7 @@ module.exports = {
                     } catch (e) {
                       console.error(`[${plant}] Could not parse Python error output`)
                     }
-                    
+
                     await report.destroy()
                     resolve({ success: false, error: errorMsg, plant })
                   }
@@ -819,7 +817,6 @@ module.exports = {
               py.on('exit', () => {
                 clearTimeout(timeoutId)
               })
-
             } catch (err) {
               console.error(`[${plant}] Error:`, err)
               reject(err)
@@ -829,11 +826,11 @@ module.exports = {
 
         // 🔧 PERBAIKAN: Jalankan semua plant SECARA BERURUTAN dengan for...of
         console.log(`Starting processing for ${listPlant.length} plants...`)
-        
+
         for (const plant of listPlant) {
           console.log(`\n=== Processing plant: ${plant} ===`)
           const result = await processPlant(plant)
-          
+
           if (result.success) {
             cekGenerate.push(result)
             console.log(`✓ ${plant} SUCCESS`)
@@ -843,27 +840,27 @@ module.exports = {
           }
         }
 
-        console.log(`\n=== ALL PLANTS PROCESSED ===`)
+        console.log('\n=== ALL PLANTS PROCESSED ===')
         console.log(`Success: ${cekGenerate.length}`)
         console.log(`Failed: ${cekFalse.length}`)
 
         // Response berdasarkan hasil
         if (cekGenerate.length > 0 && cekFalse.length === 0) {
-          return response(res, 'Semua report berhasil di-generate', { 
+          return response(res, 'Semua report berhasil di-generate', {
             success: cekGenerate.length,
-            results: cekGenerate 
+            results: cekGenerate
           }, 200, true)
         } else if (cekGenerate.length > 0 && cekFalse.length > 0) {
-          return response(res, 'Sebagian report berhasil di-generate', { 
+          return response(res, 'Sebagian report berhasil di-generate', {
             success: cekGenerate.length,
             failed: cekFalse.length,
             successList: cekGenerate,
             failedList: cekFalse
           }, 207, true) // 207 Multi-Status
         } else {
-          return response(res, 'Semua report gagal di-generate', { 
+          return response(res, 'Semua report gagal di-generate', {
             failed: cekFalse.length,
-            failedList: cekFalse 
+            failedList: cekFalse
           }, 400, false)
         }
       } else {
@@ -876,21 +873,20 @@ module.exports = {
   },
   mergeInventoryReports: async (req, res) => {
     try {
-
       const username = req.user.name
       const { listIds, date } = req.body // Array of report IDs to merge
-      const startDate = moment(date).startOf('month').toDate();
-      
+      const startDate = moment(date).startOf('month').toDate()
+
       if (!listIds || !Array.isArray(listIds) || listIds.length === 0) {
         return response(res, 'listIds harus berupa array dan tidak boleh kosong', {}, 400, false)
       }
-      
+
       if (listIds.length === 1) {
         return response(res, 'Minimal 2 report untuk di-merge', {}, 400, false)
       }
-      
+
       console.log(`Merging ${listIds.length} reports:`, listIds)
-      
+
       // Fetch all reports from database
       const reports = await report_inven.findAll({
         where: {
@@ -899,20 +895,20 @@ module.exports = {
           status: 2 // Only merge successful reports
         }
       })
-      
+
       if (reports.length === 0) {
         return response(res, 'Tidak ada report yang valid untuk di-merge', {}, 400, false)
       }
-      
+
       if (reports.length !== listIds.length) {
-        return response(res, 
-          `Hanya ${reports.length} dari ${listIds.length} report yang valid (status=success, type=output)`, 
+        return response(res,
+          `Hanya ${reports.length} dari ${listIds.length} report yang valid (status=success, type=output)`,
           {}, 400, false)
       }
-      
+
       // Get file paths
       const filePaths = reports.map(r => r.path)
-      
+
       // Validate all files exist
       const fs = require('fs')
       for (const filePath of filePaths) {
@@ -920,7 +916,7 @@ module.exports = {
           return response(res, `File tidak ditemukan: ${filePath}`, {}, 404, false)
         }
       }
-      
+
       // Create new record for merged report
       const mergedReport = await report_inven.create({
         name: 'consolidated_report_inventory',
@@ -928,41 +924,41 @@ module.exports = {
         type: 'consolidated',
         status: 0 // Processing
       })
-      
+
       console.log('Starting Python merge worker...')
-      
+
       // Spawn python worker
       const { spawn } = require('child_process')
       const path = require('path')
-      
+
       const py = spawn(pythonPath, [
         path.join(__dirname, '../workers/merge_inventory_reports.py')
       ])
-      
+
       const payload = {
         report_id: mergedReport.id,
         file_paths: filePaths
       }
-      
+
       console.log('Sending payload to Python:', JSON.stringify(payload, null, 2))
-      
+
       py.stdin.write(JSON.stringify(payload))
       py.stdin.end()
-      
+
       let stdoutData = ''
       let stderrData = ''
       let responseSent = false
-      
+
       py.stdout.on('data', data => {
         stdoutData += data.toString()
         console.log('Python stdout:', data.toString())
       })
-      
+
       py.stderr.on('data', data => {
         stderrData += data.toString()
         console.log('Python stderr:', data.toString())
       })
-      
+
       py.on('error', async (error) => {
         console.error('Failed to start Python process:', error)
         if (!responseSent) {
@@ -971,15 +967,15 @@ module.exports = {
           return response(res, 'Failed to start Python process: ' + error.message, {}, 500, false)
         }
       })
-      
+
       py.on('close', async (code) => {
         console.log(`Python process exited with code ${code}`)
         console.log('Final stdout:', stdoutData)
         console.log('Final stderr:', stderrData)
-        
+
         if (responseSent) return
         responseSent = true
-        
+
         try {
           if (code === 0) {
             // Parse JSON from stdout
@@ -987,15 +983,15 @@ module.exports = {
             if (!jsonMatch) {
               throw new Error('No JSON found in Python output')
             }
-            
+
             const result = JSON.parse(jsonMatch[0])
-            
+
             if (!result.success) {
               throw new Error(result.error || 'Unknown Python error')
             }
-            
+
             console.log('Reports merged successfully:', result.output_path)
-            
+
             // Update database
             let fullplant = ''
             reports.map(x => fullplant = `${fullplant === '' ? '' : fullplant + ', '}${x.plant}`)
@@ -1008,7 +1004,7 @@ module.exports = {
               date_report: startDate,
               info: `Merge report ${fullplant}`
             })
-            
+
             return response(res, 'Reports merged successfully', {
               link: result.output_path,
               report_id: mergedReport.id,
@@ -1019,7 +1015,7 @@ module.exports = {
           } else {
             // Python exited with error
             let errorMsg = 'Python process failed'
-            
+
             try {
               const jsonMatch = stdoutData.match(/\{[\s\S]*\}/)
               if (jsonMatch) {
@@ -1030,7 +1026,7 @@ module.exports = {
             } catch (e) {
               console.error('Could not parse Python error output')
             }
-            
+
             await mergedReport.destroy() // Failed
             return response(res, 'Failed to merge reports: ' + errorMsg, {
               stderr: stderrData,
@@ -1041,7 +1037,7 @@ module.exports = {
           console.error('Error parsing Python output:', parseError)
           console.error('Raw stdout:', stdoutData)
           console.error('Raw stderr:', stderrData)
-          
+
           await mergedReport.destroy() // Failed
           return response(res, 'Failed to parse Python output: ' + parseError.message, {
             stdout: stdoutData,
@@ -1049,7 +1045,7 @@ module.exports = {
           }, 500, false)
         }
       })
-      
+
       // Set timeout (5 minutes)
       const timeoutId = setTimeout(() => {
         if (!responseSent && !py.killed) {
@@ -1060,12 +1056,11 @@ module.exports = {
           return response(res, 'Merge operation timeout', {}, 500, false)
         }
       }, 300000) // 5 minutes
-      
+
       // Clear timeout on exit
       py.on('exit', () => {
         clearTimeout(timeoutId)
       })
-      
     } catch (err) {
       console.error('Controller error:', err)
       return response(res, err.message, {}, 500, false)
@@ -1073,57 +1068,57 @@ module.exports = {
   },
   generateInventoryReportReadData: async (req, res) => {
     try {
-        const { listId } = req.body;
-        let dataId = [];
-        if (listId && listId.length > 0) {
-            dataId = listId.map(function(id) {
-                return { id: id };
-            });
+      const { listId } = req.body
+      let dataId = []
+      if (listId && listId.length > 0) {
+        dataId = listId.map(function (id) {
+          return { id: id }
+        })
+      }
+
+      const files = await report_inven.findAll({ where: { [Op.or]: dataId } })
+      const mb51 = files.find(f => f.type === 'mb51')
+      const main = files.find(f => f.type === 'main')
+
+      if (!mb51 || !main) {
+        return response(res, 'File MB51 atau main.xlsx belum diupload', {}, 400, false)
+      }
+
+      const py = spawn('C:\\Users\\user\\AppData\\Local\\Programs\\Python\\Python313\\python.exe', [
+        path.join(__dirname, '../workers/read_excel.py')
+      ])
+
+      const payload = {
+        files: {
+          mb51: mb51.path,
+          main: main.path
         }
+      }
 
-        const files = await report_inven.findAll({ where: { [Op.or]: dataId } });
-        const mb51 = files.find(f => f.type === 'mb51');
-        const main = files.find(f => f.type === 'main');
+      py.stdin.write(JSON.stringify(payload))
+      py.stdin.end()
 
-        if (!mb51 || !main) {
-            return response(res, 'File MB51 atau main.xlsx belum diupload', {}, 400, false);
+      const outputChunks = []
+      py.stdout.on('data', chunk => outputChunks.push(Buffer.from(chunk)))
+      py.stderr.on('data', data => console.error('Python error:', data.toString()))
+
+      py.on('close', async code => {
+        if (code === 0) {
+          try {
+            const outputStr = Buffer.concat(outputChunks).toString('utf8')
+            const result = JSON.parse(outputStr)
+            return response(res, 'Report generated successfully', { data: result.mb51 })
+          } catch (err) {
+            console.error('JSON parse error:', err)
+            return response(res, 'Failed to parse JSON from Python', {}, 500, false)
+          }
+        } else {
+          return response(res, 'Failed to generate report', {}, 500, false)
         }
-
-        const py = spawn("C:\\Users\\user\\AppData\\Local\\Programs\\Python\\Python313\\python.exe", [
-            path.join(__dirname, '../workers/read_excel.py')
-        ]);
-
-        const payload = {
-            files: {
-                mb51: mb51.path,
-                main: main.path
-            }
-        };
-
-        py.stdin.write(JSON.stringify(payload));
-        py.stdin.end();
-
-        let outputChunks = [];
-        py.stdout.on('data', chunk => outputChunks.push(Buffer.from(chunk)));
-        py.stderr.on('data', data => console.error('Python error:', data.toString()));
-
-        py.on('close', async code => {
-            if (code === 0) {
-                try {
-                    const outputStr = Buffer.concat(outputChunks).toString('utf8');
-                    const result = JSON.parse(outputStr);
-                    return response(res, 'Report generated successfully', { data: result.mb51 });
-                } catch(err) {
-                    console.error('JSON parse error:', err);
-                    return response(res, 'Failed to parse JSON from Python', {}, 500, false);
-                }
-            } else {
-                return response(res, 'Failed to generate report', {}, 500, false);
-            }
-        });
+      })
     } catch (err) {
-        console.error(err);
-        return response(res, err.message, {}, 500, false);
+      console.error(err)
+      return response(res, err.message, {}, 500, false)
     }
   }
 }
