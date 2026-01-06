@@ -1104,7 +1104,7 @@ module.exports = {
       // Validate files
       const fs = require('fs')
       const filePaths = reports.map(r => r.path)
-      
+
       for (const filePath of filePaths) {
         if (!fs.existsSync(filePath)) {
           return response(res, `File tidak ditemukan: ${filePath}`, {}, 404, false)
@@ -1127,7 +1127,7 @@ module.exports = {
       res.writeHead(200, {
         'Content-Type': 'text/event-stream',
         'Cache-Control': 'no-cache',
-        'Connection': 'keep-alive',
+        Connection: 'keep-alive',
         'X-Accel-Buffering': 'no' // Disable nginx buffering
       })
 
@@ -1137,8 +1137,8 @@ module.exports = {
       }
 
       // Send initial message
-      sendSSE({ 
-        type: 'start', 
+      sendSSE({
+        type: 'start',
         message: `Starting merge for ${listIds.length} reports`,
         total_files: listIds.length
       })
@@ -1167,23 +1167,23 @@ module.exports = {
       // ==================================================================
       // HANDLE PYTHON OUTPUT - Parse line by line
       // ==================================================================
-      py.stdout.on('data', data => {
+      py.stdout.on('data', async (data) => {
         stdoutBuffer += data.toString()
-        
+
         // Process complete lines
         const lines = stdoutBuffer.split('\n')
         stdoutBuffer = lines.pop() // Keep incomplete line in buffer
-        
+
         for (const line of lines) {
           if (!line.trim()) continue
-          
+
           try {
             const parsed = JSON.parse(line)
-            
+
             // Progress update from Python
             if (parsed.type === 'progress') {
               console.log(`Progress: ${parsed.stage} ${parsed.current}/${parsed.total} - ${parsed.message}`)
-              
+
               // Forward to client via SSE
               sendSSE({
                 type: 'progress',
@@ -1197,23 +1197,23 @@ module.exports = {
             // Final result from Python
             else if (parsed.success !== undefined) {
               finalResultReceived = true
-              
+
               if (parsed.success) {
                 console.log('Merge completed successfully:', parsed.output_path)
-                
+
                 // Update database
                 let fullplant = ''
-                reports.forEach(x => {
-                  fullplant = `${fullplant === '' ? '' : fullplant + ', '}${x.plant}`
+                reports.forEach(function (x) {
+                  fullplant = fullplant === '' ? x.plant : fullplant + ', ' + x.plant
                 })
 
                 await mergedReport.update({
                   path: parsed.output_path,
                   status: 3,
-                  name: `consolidated_report_${parsed.timestamp}`,
+                  name: 'consolidated_report_' + parsed.timestamp,
                   user_upload: username,
                   date_report: startDate,
-                  info: `Merge report ${fullplant}`
+                  info: 'Merge report ' + fullplant
                 })
 
                 // Send success message
@@ -1230,56 +1230,56 @@ module.exports = {
                     plant_codes: parsed.plant_codes
                   }
                 })
-                
+
                 // Close connection
                 res.end()
               } else {
-                // Error result
+              // Error result
                 console.error('Python error:', parsed.error)
-                
+
                 await mergedReport.destroy()
-                
+
                 sendSSE({
                   type: 'error',
                   success: false,
                   message: parsed.error || 'Unknown error',
                   trace: parsed.trace
                 })
-                
+
                 res.end()
               }
             }
           } catch (err) {
-            // Not JSON, probably a log message
+          // Not JSON, probably a log message
             console.log('Python log:', line)
           }
         }
       })
 
-      py.stderr.on('data', data => {
+      py.stderr.on('data', function (data) {
         stderrData += data.toString()
         console.log('Python stderr:', data.toString())
       })
 
-      py.on('error', async (error) => {
+      py.on('error', async function (error) {
         console.error('Failed to start Python process:', error)
-        
+
         await mergedReport.destroy()
-        
+
         sendSSE({
           type: 'error',
           success: false,
           message: 'Failed to start Python process: ' + error.message
         })
-        
+
         res.end()
       })
 
-      py.on('close', async (code) => {
-        console.log(`Python process exited with code ${code}`)
-        
+      py.on('close', async function (code) {
+        console.log('Python process exited with code ' + code)
+
         if (finalResultReceived) {
-          // Already handled in stdout
+        // Already handled in stdout
           return
         }
 
@@ -1287,34 +1287,34 @@ module.exports = {
         if (code !== 0) {
           console.error('Python process failed with code:', code)
           console.error('Stderr:', stderrData)
-          
+
           await mergedReport.destroy()
-          
+
           sendSSE({
             type: 'error',
             success: false,
-            message: `Python process failed with code ${code}`,
+            message: 'Python process failed with code ' + code,
             stderr: stderrData
           })
         } else {
-          // Code 0 but no result? Parse buffer
+        // Code 0 but no result? Parse buffer
           try {
             if (stdoutBuffer.trim()) {
               const parsed = JSON.parse(stdoutBuffer)
               if (parsed.success) {
-                // Handle success (same as above)
+              // Handle success (same as above)
                 let fullplant = ''
-                reports.forEach(x => {
-                  fullplant = `${fullplant === '' ? '' : fullplant + ', '}${x.plant}`
+                reports.forEach(function (x) {
+                  fullplant = fullplant === '' ? x.plant : fullplant + ', ' + x.plant
                 })
 
                 await mergedReport.update({
                   path: parsed.output_path,
                   status: 3,
-                  name: `consolidated_report_${parsed.timestamp}`,
+                  name: 'consolidated_report_' + parsed.timestamp,
                   user_upload: username,
                   date_report: startDate,
-                  info: `Merge report ${fullplant}`
+                  info: 'Merge report ' + fullplant
                 })
 
                 sendSSE({
@@ -1333,9 +1333,9 @@ module.exports = {
             }
           } catch (err) {
             console.error('Failed to parse final output:', err)
-            
+
             await mergedReport.destroy()
-            
+
             sendSSE({
               type: 'error',
               success: false,
@@ -1343,7 +1343,7 @@ module.exports = {
             })
           }
         }
-        
+
         res.end()
       })
 
@@ -1351,38 +1351,37 @@ module.exports = {
       // TIMEOUT HANDLING - Increased to 30 minutes for 275 files
       // ==================================================================
       const timeoutDuration = 30 * 60 * 1000 // 30 minutes
-      
-      const timeoutId = setTimeout(() => {
+
+      const timeoutId = setTimeout(function () {
         if (!py.killed) {
           console.log('Python process timeout, killing...')
           py.kill()
-          
+
           mergedReport.destroy()
-          
+
           sendSSE({
             type: 'error',
             success: false,
             message: 'Merge operation timeout (30 minutes)'
           })
-          
+
           res.end()
         }
       }, timeoutDuration)
 
       // Clear timeout on exit
-      py.on('exit', () => {
+      py.on('exit', function () {
         clearTimeout(timeoutId)
       })
 
       // Handle client disconnect
-      req.on('close', () => {
+      req.on('close', function () {
         console.log('Client disconnected, killing Python process')
         if (!py.killed) {
           py.kill()
         }
         clearTimeout(timeoutId)
       })
-
     } catch (err) {
       console.error('Controller error:', err)
       return response(res, err.message, {}, 500, false)
