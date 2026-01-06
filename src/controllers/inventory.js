@@ -871,7 +871,7 @@ module.exports = {
       return response(res, err.message, {}, 500, false)
     }
   },
-  mergeInventoryReports: async (req, res) => {
+  mergeInventoryReportsOld: async (req, res) => {
     try {
       const username = req.user.name
       const { listIds, date } = req.body // Array of report IDs to merge
@@ -1061,6 +1061,328 @@ module.exports = {
       py.on('exit', () => {
         clearTimeout(timeoutId)
       })
+    } catch (err) {
+      console.error('Controller error:', err)
+      return response(res, err.message, {}, 500, false)
+    }
+  },
+  mergeInventoryReports: async (req, res) => {
+    try {
+      const username = req.user.name
+      const { listIds, date } = req.body
+      const startDate = moment(date).startOf('month').toDate()
+
+      if (!listIds || !Array.isArray(listIds) || listIds.length === 0) {
+        return response(res, 'listIds harus berupa array dan tidak boleh kosong', {}, 400, false)
+      }
+
+      if (listIds.length === 1) {
+        return response(res, 'Minimal 2 report untuk di-merge', {}, 400, false)
+      }
+
+      console.log(`Merging ${listIds.length} reports:`, listIds)
+
+      // Fetch reports
+      const reports = await report_inven.findAll({
+        where: {
+          id: listIds,
+          type: 'output',
+          status: 2
+        }
+      })
+
+      if (reports.length === 0) {
+        return response(res, 'Tidak ada report yang valid untuk di-merge', {}, 400, false)
+      }
+
+      if (reports.length !== listIds.length) {
+        return response(res,
+          `Hanya ${reports.length} dari ${listIds.length} report yang valid`,
+          {}, 400, false)
+      }
+
+      // Validate files
+      const fs = require('fs')
+      const filePaths = reports.map(r => r.path)
+      
+      for (const filePath of filePaths) {
+        if (!fs.existsSync(filePath)) {
+          return response(res, `File tidak ditemukan: ${filePath}`, {}, 404, false)
+        }
+      }
+
+      // Create merged report record
+      const mergedReport = await report_inven.create({
+        name: 'consolidated_report_inventory',
+        path: '',
+        type: 'consolidated',
+        status: 0
+      })
+
+      console.log('Starting Python merge worker...')
+
+      // ==================================================================
+      // SETUP SSE (Server-Sent Events) for streaming progress
+      // ==================================================================
+      res.writeHead(200, {
+        'Content-Type': 'text/event-stream',
+        'Cache-Control': 'no-cache',
+        'Connection': 'keep-alive',
+        'X-Accel-Buffering': 'no' // Disable nginx buffering
+      })
+
+      // Helper to send SSE messages
+      const sendSSE = (data) => {
+        res.write(`data: ${JSON.stringify(data)}\n\n`)
+      }
+
+      // Send initial message
+      sendSSE({ 
+        type: 'start', 
+        message: `Starting merge for ${listIds.length} reports`,
+        total_files: listIds.length
+      })
+
+      // Spawn Python process
+      const { spawn } = require('child_process')
+      const path = require('path')
+
+      const py = spawn(pythonPath, [
+        path.join(__dirname, '../workers/merge_inventory_reports.py')
+      ])
+
+      const payload = {
+        report_id: mergedReport.id,
+        file_paths: filePaths
+      }
+
+      console.log('Sending payload to Python')
+      py.stdin.write(JSON.stringify(payload))
+      py.stdin.end()
+
+      let stdoutBuffer = ''
+      let stderrData = ''
+      let finalResultReceived = false
+
+      // ==================================================================
+      // HANDLE PYTHON OUTPUT - Parse line by line
+      // ==================================================================
+      py.stdout.on('data', data => {
+        stdoutBuffer += data.toString()
+        
+        // Process complete lines
+        const lines = stdoutBuffer.split('\n')
+        stdoutBuffer = lines.pop() // Keep incomplete line in buffer
+        
+        for (const line of lines) {
+          if (!line.trim()) continue
+          
+          try {
+            const parsed = JSON.parse(line)
+            
+            // Progress update from Python
+            if (parsed.type === 'progress') {
+              console.log(`Progress: ${parsed.stage} ${parsed.current}/${parsed.total} - ${parsed.message}`)
+              
+              // Forward to client via SSE
+              sendSSE({
+                type: 'progress',
+                stage: parsed.stage,
+                current: parsed.current,
+                total: parsed.total,
+                percentage: parsed.percentage,
+                message: parsed.message
+              })
+            }
+            // Final result from Python
+            else if (parsed.success !== undefined) {
+              finalResultReceived = true
+              
+              if (parsed.success) {
+                console.log('Merge completed successfully:', parsed.output_path)
+                
+                // Update database
+                let fullplant = ''
+                reports.forEach(x => {
+                  fullplant = `${fullplant === '' ? '' : fullplant + ', '}${x.plant}`
+                })
+
+                await mergedReport.update({
+                  path: parsed.output_path,
+                  status: 3,
+                  name: `consolidated_report_${parsed.timestamp}`,
+                  user_upload: username,
+                  date_report: startDate,
+                  info: `Merge report ${fullplant}`
+                })
+
+                // Send success message
+                sendSSE({
+                  type: 'complete',
+                  success: true,
+                  message: 'Reports merged successfully',
+                  data: {
+                    link: parsed.output_path,
+                    report_id: mergedReport.id,
+                    total_files_merged: parsed.total_files_merged,
+                    total_data_rows: parsed.total_data_rows,
+                    file_size: parsed.file_size,
+                    plant_codes: parsed.plant_codes
+                  }
+                })
+                
+                // Close connection
+                res.end()
+              } else {
+                // Error result
+                console.error('Python error:', parsed.error)
+                
+                await mergedReport.destroy()
+                
+                sendSSE({
+                  type: 'error',
+                  success: false,
+                  message: parsed.error || 'Unknown error',
+                  trace: parsed.trace
+                })
+                
+                res.end()
+              }
+            }
+          } catch (err) {
+            // Not JSON, probably a log message
+            console.log('Python log:', line)
+          }
+        }
+      })
+
+      py.stderr.on('data', data => {
+        stderrData += data.toString()
+        console.log('Python stderr:', data.toString())
+      })
+
+      py.on('error', async (error) => {
+        console.error('Failed to start Python process:', error)
+        
+        await mergedReport.destroy()
+        
+        sendSSE({
+          type: 'error',
+          success: false,
+          message: 'Failed to start Python process: ' + error.message
+        })
+        
+        res.end()
+      })
+
+      py.on('close', async (code) => {
+        console.log(`Python process exited with code ${code}`)
+        
+        if (finalResultReceived) {
+          // Already handled in stdout
+          return
+        }
+
+        // Process exited without sending final result
+        if (code !== 0) {
+          console.error('Python process failed with code:', code)
+          console.error('Stderr:', stderrData)
+          
+          await mergedReport.destroy()
+          
+          sendSSE({
+            type: 'error',
+            success: false,
+            message: `Python process failed with code ${code}`,
+            stderr: stderrData
+          })
+        } else {
+          // Code 0 but no result? Parse buffer
+          try {
+            if (stdoutBuffer.trim()) {
+              const parsed = JSON.parse(stdoutBuffer)
+              if (parsed.success) {
+                // Handle success (same as above)
+                let fullplant = ''
+                reports.forEach(x => {
+                  fullplant = `${fullplant === '' ? '' : fullplant + ', '}${x.plant}`
+                })
+
+                await mergedReport.update({
+                  path: parsed.output_path,
+                  status: 3,
+                  name: `consolidated_report_${parsed.timestamp}`,
+                  user_upload: username,
+                  date_report: startDate,
+                  info: `Merge report ${fullplant}`
+                })
+
+                sendSSE({
+                  type: 'complete',
+                  success: true,
+                  message: 'Reports merged successfully',
+                  data: {
+                    link: parsed.output_path,
+                    report_id: mergedReport.id,
+                    total_files_merged: parsed.total_files_merged,
+                    total_data_rows: parsed.total_data_rows,
+                    file_size: parsed.file_size
+                  }
+                })
+              }
+            }
+          } catch (err) {
+            console.error('Failed to parse final output:', err)
+            
+            await mergedReport.destroy()
+            
+            sendSSE({
+              type: 'error',
+              success: false,
+              message: 'Failed to parse Python output'
+            })
+          }
+        }
+        
+        res.end()
+      })
+
+      // ==================================================================
+      // TIMEOUT HANDLING - Increased to 30 minutes for 275 files
+      // ==================================================================
+      const timeoutDuration = 30 * 60 * 1000 // 30 minutes
+      
+      const timeoutId = setTimeout(() => {
+        if (!py.killed) {
+          console.log('Python process timeout, killing...')
+          py.kill()
+          
+          mergedReport.destroy()
+          
+          sendSSE({
+            type: 'error',
+            success: false,
+            message: 'Merge operation timeout (30 minutes)'
+          })
+          
+          res.end()
+        }
+      }, timeoutDuration)
+
+      // Clear timeout on exit
+      py.on('exit', () => {
+        clearTimeout(timeoutId)
+      })
+
+      // Handle client disconnect
+      req.on('close', () => {
+        console.log('Client disconnected, killing Python process')
+        if (!py.killed) {
+          py.kill()
+        }
+        clearTimeout(timeoutId)
+      })
+
     } catch (err) {
       console.error('Controller error:', err)
       return response(res, err.message, {}, 500, false)

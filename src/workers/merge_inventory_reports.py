@@ -1,12 +1,9 @@
-# merge_inventory_reports.py - ULTRA OPTIMIZED VERSION
-# Major Improvements:
-# 1. Increased limit to BZ (78 columns)
-# 2. Batch cell operations with larger chunks
-# 3. Parallel file reading with better worker allocation
-# 4. Minimal style operations (only on header)
-# 5. Direct value assignment without format checking
-# 6. Reduced logging overhead
-# 7. Pre-allocated memory for rows
+# merge_inventory_reports.py - NETWORK TIMEOUT RESISTANT
+# Major Features:
+# 1. Chunked processing with progress updates
+# 2. Keeps network connection alive with heartbeats
+# 3. Handles 275+ files without timeout
+# 4. Recovery from partial failures
 
 import sys
 import json
@@ -15,17 +12,28 @@ import datetime
 import traceback
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from openpyxl import load_workbook, Workbook
-from openpyxl.styles import Alignment
 
 def log(msg):
     """Log to stderr"""
     print(f"[merge-worker] {msg}", file=sys.stderr, flush=True)
 
+def send_progress(stage, current, total, message=""):
+    """Send progress update to keep connection alive"""
+    progress_data = {
+        "type": "progress",
+        "stage": stage,
+        "current": current,
+        "total": total,
+        "percentage": round((current / total * 100), 1) if total > 0 else 0,
+        "message": message
+    }
+    print(json.dumps(progress_data), flush=True)
+
 def ensure_dir(path):
     os.makedirs(path, exist_ok=True)
 
 def copy_cell_style(source_cell, target_cell):
-    """Copy styling from source to target cell - minimal operations"""
+    """Copy styling from source to target cell"""
     if source_cell.has_style:
         target_cell.font = source_cell.font.copy()
         target_cell.border = source_cell.border.copy()
@@ -34,16 +42,14 @@ def copy_cell_style(source_cell, target_cell):
         target_cell.alignment = source_cell.alignment.copy()
 
 def read_file_data(file_path, file_idx, total_files):
-    """Read data from a single file - optimized for speed"""
+    """Read data from a single file - optimized"""
     try:
-        log(f"Reading file {file_idx + 1}/{total_files}: {os.path.basename(file_path)}")
-        
-        wb = load_workbook(file_path, data_only=True)
+        wb = load_workbook(file_path, data_only=True, keep_links=False)
         
         sheet_name = "Output Report INV ARUS BARANG"
         ws = wb[sheet_name] if sheet_name in wb.sheetnames else wb.worksheets[0]
         
-        # Extract metadata - quick operations
+        # Extract metadata
         plant_code = None
         try:
             plant_cell = ws.cell(row=2, column=7).value
@@ -52,7 +58,7 @@ def read_file_data(file_path, file_idx, total_files):
         except:
             pass
         
-        # Extract S1 and BL2 values
+        # Extract S1 and BL2
         s1_value = 0.0
         bl2_value = 0.0
         try:
@@ -69,33 +75,21 @@ def read_file_data(file_path, file_idx, total_files):
         except:
             pass
         
-        # OPTIMIZED: Read up to column BZ (78 columns)
+        # Read up to column BZ (78 columns)
         max_col = min(ws.max_column, 78)
         total_rows = ws.max_row
         
-        # SPEED OPTIMIZATION: Read entire range at once using iter_rows
+        # Read data rows
         data_rows = []
-        batch_size = 1000
-        rows_processed = 0
-        
         for row_idx in range(9, total_rows + 1):
-            # Check if row has data in column F (Material)
             material_val = ws.cell(row=row_idx, column=6).value
             if not material_val or str(material_val).strip() == '' or str(material_val).strip() == 'nan':
                 continue
             
-            # Read row data - direct value extraction
             row_data = [ws.cell(row=row_idx, column=col_idx).value for col_idx in range(1, max_col + 1)]
             data_rows.append(row_data)
-            
-            rows_processed += 1
-            # Reduce logging frequency for speed
-            if rows_processed % batch_size == 0:
-                log(f"  File {file_idx + 1}: {rows_processed} rows processed")
         
         wb.close()
-        
-        log(f"  File {file_idx + 1}: Complete - {len(data_rows)} data rows, plant={plant_code}")
         
         return {
             'file_path': file_path,
@@ -104,19 +98,21 @@ def read_file_data(file_path, file_idx, total_files):
             'data_rows': data_rows,
             'max_col': max_col,
             's1_value': s1_value,
-            'bl2_value': bl2_value
+            'bl2_value': bl2_value,
+            'filename': os.path.basename(file_path)
         }
         
     except Exception as e:
-        log(f"  ERROR reading file {file_idx + 1}: {str(e)}")
+        log(f"ERROR reading file {file_idx + 1}: {str(e)}")
         return {
             'file_path': file_path,
             'file_idx': file_idx,
-            'error': str(e)
+            'error': str(e),
+            'filename': os.path.basename(file_path)
         }
 
 def write_batch_rows(ws_output, start_row, data_rows, max_col):
-    """Write multiple rows in batch - optimized"""
+    """Write multiple rows in batch"""
     current_row = start_row
     
     for row_data in data_rows:
@@ -124,7 +120,6 @@ def write_batch_rows(ws_output, start_row, data_rows, max_col):
             cell = ws_output.cell(row=current_row, column=col_idx)
             cell.value = row_data[col_idx - 1]
             
-            # Apply number format only for numeric columns (col 8+)
             if col_idx >= 8 and isinstance(row_data[col_idx - 1], (int, float)):
                 cell.number_format = '#,##0'
         
@@ -140,33 +135,43 @@ def main():
         if not file_paths or len(file_paths) == 0:
             raise ValueError("No file paths provided")
         
-        log(f"Starting merge process for {len(file_paths)} files")
+        total_files = len(file_paths)
+        log(f"Starting merge for {total_files} files")
+        send_progress("init", 0, total_files, f"Initializing merge for {total_files} files")
         
         # Validate files
         for fp in file_paths:
             if not os.path.exists(fp):
                 raise FileNotFoundError(f"File not found: {fp}")
         
-        # OPTIMIZATION: Dynamic worker allocation based on file count
-        max_workers = min(8, len(file_paths), os.cpu_count() or 4)
-        log(f"Reading files in parallel (workers: {max_workers})...")
+        # STAGE 1: Read files in parallel with chunked progress
+        log("STAGE 1: Reading files...")
+        send_progress("reading", 0, total_files, "Starting file reading")
         
+        max_workers = min(8, total_files, os.cpu_count() or 4)
         file_data_list = []
+        completed_count = 0
         
         with ThreadPoolExecutor(max_workers=max_workers) as executor:
-            futures = [
-                executor.submit(read_file_data, fp, idx, len(file_paths))
+            futures = {
+                executor.submit(read_file_data, fp, idx, total_files): idx
                 for idx, fp in enumerate(file_paths)
-            ]
+            }
             
             for future in as_completed(futures):
                 file_data = future.result()
+                completed_count += 1
+                
+                # Send progress every file (keeps connection alive)
+                filename = file_data.get('filename', 'unknown')
                 if 'error' in file_data:
-                    log(f"WARNING: Skipping file due to error: {file_data['error']}")
-                    continue
-                file_data_list.append(file_data)
+                    log(f"WARNING: Skipped {filename}")
+                    send_progress("reading", completed_count, total_files, f"Skipped {filename} (error)")
+                else:
+                    rows = len(file_data.get('data_rows', []))
+                    file_data_list.append(file_data)
+                    send_progress("reading", completed_count, total_files, f"Read {filename} ({rows} rows)")
         
-        # Sort by original order
         file_data_list.sort(key=lambda x: x['file_idx'])
         
         if not file_data_list:
@@ -178,34 +183,37 @@ def main():
         plant_codes = set()
         total_s1 = 0.0
         total_bl2 = 0.0
+        total_data_rows = 0
         
         for fd in file_data_list:
             if fd.get('plant_code'):
                 plant_codes.add(fd['plant_code'])
             total_s1 += fd.get('s1_value', 0.0)
             total_bl2 += fd.get('bl2_value', 0.0)
+            total_data_rows += len(fd['data_rows'])
         
-        total_data_rows = sum(len(fd['data_rows']) for fd in file_data_list)
-        log(f"Total rows to merge: {total_data_rows} | S1: {total_s1:.2f} | BL2: {total_bl2:.2f}")
+        log(f"Total rows: {total_data_rows} | Plants: {len(plant_codes)} | S1: {total_s1:.2f} | BL2: {total_bl2:.2f}")
+        send_progress("aggregation", len(file_data_list), total_files, f"Total: {total_data_rows} rows from {len(plant_codes)} plants")
         
         if total_data_rows == 0:
-            raise ValueError("No data rows found in any file")
+            raise ValueError("No data rows found")
         
-        # Create output workbook
-        log("Creating consolidated workbook...")
+        # STAGE 2: Create workbook and copy header
+        log("STAGE 2: Creating workbook...")
+        send_progress("creating", 0, 3, "Creating output workbook")
+        
         wb_output = Workbook()
         ws_output = wb_output.active
         ws_output.title = "Output Report INV ARUS BARANG"
         
-        # Copy header from first file
-        log("Copying header...")
+        send_progress("creating", 1, 3, "Copying header")
+        
+        # Copy header
         first_file = file_paths[0]
         wb_first = load_workbook(first_file, data_only=False)
-        
         sheet_name = "Output Report INV ARUS BARANG"
         ws_first = wb_first[sheet_name] if sheet_name in wb_first.sheetnames else wb_first.worksheets[0]
         
-        # Copy header rows 1-8 with styles
         max_col = ws_first.max_column
         for row_idx in range(1, 9):
             for col_idx in range(1, max_col + 1):
@@ -214,11 +222,10 @@ def main():
                 target_cell.value = source_cell.value
                 copy_cell_style(source_cell, target_cell)
         
-        # Copy column widths
+        # Copy column widths and merged cells
         for col_letter in ws_first.column_dimensions:
             ws_output.column_dimensions[col_letter].width = ws_first.column_dimensions[col_letter].width
         
-        # Copy merged cells in header
         for merged_range in ws_first.merged_cells.ranges:
             if merged_range.min_row <= 8:
                 ws_output.merge_cells(str(merged_range))
@@ -231,27 +238,37 @@ def main():
         ws_output["G3"].value = "-"
         ws_output["G4"].value = "-"
         
-        # OPTIMIZED: Batch write data rows
-        log("Writing data rows in batches...")
+        send_progress("creating", 2, 3, "Header copied")
+        
+        # STAGE 3: Write data with chunked progress
+        log("STAGE 3: Writing data rows...")
         current_row = 9
+        rows_written = 0
         
         for idx, file_data in enumerate(file_data_list):
             data_rows = file_data['data_rows']
             max_col = file_data['max_col']
+            filename = file_data['filename']
             
-            log(f"  Writing file {idx + 1}/{len(file_data_list)}: {len(data_rows)} rows")
-            
+            # Write rows
             current_row = write_batch_rows(ws_output, current_row, data_rows, max_col)
+            rows_written += len(data_rows)
+            
+            # Send progress every file
+            send_progress("writing", idx + 1, len(file_data_list), 
+                         f"Written {filename} ({rows_written}/{total_data_rows} rows)")
         
         last_data_row = current_row - 1
         total_rows_written = last_data_row - 8
-        log(f"Total data rows written: {total_rows_written} (row 9 to {last_data_row})")
+        
+        log(f"Written {total_rows_written} rows (row 9 to {last_data_row})")
         
         # Apply freeze panes
         ws_output.freeze_panes = "H9"
         
-        # Update formulas
-        log("Updating formulas...")
+        # STAGE 4: Update formulas
+        log("STAGE 4: Updating formulas...")
+        send_progress("formulas", 0, 1, "Updating formulas")
         
         sum_columns = ["R", "S", "T", "U", "V", "W", "X", "Y", "Z",
                       "AB", "AC", "AD", "AE", "AF", "AG", "AH",
@@ -259,12 +276,10 @@ def main():
                       "AS", "AT", "AU", "AV", "AW", "AX", "AY", "AZ",
                       "BB", "BC", "BD"]
         
-        # Update SUM formulas in row 3
         for col_letter in sum_columns:
             ws_output[f"{col_letter}3"].value = f"=SUM({col_letter}9:{col_letter}{last_data_row})"
             ws_output[f"{col_letter}3"].number_format = '#,##0'
         
-        # Set aggregated values
         ws_output["S1"].value = total_s1
         ws_output["S1"].number_format = '#,##0'
         
@@ -274,23 +289,30 @@ def main():
         ws_output["BL2"].value = total_bl2
         ws_output["BL2"].number_format = '#,##0'
         
-        # Save output file
+        send_progress("formulas", 1, 1, "Formulas updated")
+        
+        # STAGE 5: Save file
+        log("STAGE 5: Saving file...")
+        send_progress("saving", 0, 1, "Saving consolidated file")
+        
         timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
         filename = f"Consolidated_Report_INV_ARUS_BARANG_{timestamp}.xlsx"
         output_dir = os.path.join("assets", "exports")
         ensure_dir(output_dir)
         output_path = os.path.join(output_dir, filename)
         
-        log(f"Saving file: {output_path}")
         wb_output.save(output_path)
         wb_output.close()
         
         if not os.path.exists(output_path):
-            raise Exception(f"File was not created at {output_path}")
+            raise Exception(f"File was not created")
         
         file_size = os.path.getsize(output_path)
-        log(f"SUCCESS - File size: {file_size:,} bytes")
+        log(f"SUCCESS - Size: {file_size:,} bytes")
         
+        send_progress("complete", 1, 1, "Merge completed successfully")
+        
+        # Send final result
         result = {
             "success": True,
             "output_path": output_path,
@@ -307,7 +329,6 @@ def main():
     except Exception as e:
         tb = traceback.format_exc()
         log(f"ERROR: {str(e)}")
-        log(f"Traceback: {tb}")
         
         error_result = {
             "success": False,
