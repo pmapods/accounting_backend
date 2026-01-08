@@ -13,8 +13,8 @@ const vs = require('fs-extra')
 const { spawn } = require('child_process')
 const path = require('path')
 const { APP_BE } = process.env
-const pythonPath = 'python'
-// const pythonPath = '/usr/bin/python3'
+// const pythonPath = 'python'
+const pythonPath = '/usr/bin/python3'
 const borderStyles = {
   top: { style: 'thin' },
   left: { style: 'thin' },
