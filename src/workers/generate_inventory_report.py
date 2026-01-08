@@ -1,9 +1,10 @@
-# generate_inventory_report.py - COMPLETE FIXED VERSION
+# generate_inventory_report.py - COMPLETE FIXED VERSION WITH EDS DEBUGGING
 # Modified: Use report_date from request body instead of MB51 posting date
 # Added "Intra Gudang Masuk" to all storage types (GS00, BS00, AI00, TR00)
 # Group MB51 by (Material, Plant, Storage, Movement Type, Movement Type Text)
 # Then map mv_text -> mv_grouping -> determine target column
 # FILTER: Only process GS00, BS00, AI00, TR00, EMPTY_STORAGE
+# Added comprehensive EDS debugging
 
 import sys
 import json
@@ -158,14 +159,28 @@ class SheetCache:
                     self.caches['mb5b_bs'] = grouped_bs.to_dict()
                     log(f"  MB5B BS cache: {len(self.caches['mb5b_bs'])} entries")
         
-        # Cache EDS
+        # Cache EDS with extensive debugging
         if '14. SALDO AKHIR EDS' in self.sheets:
             df = self.sheets['14. SALDO AKHIR EDS']
+            log(f"  === DEBUGGING EDS SHEET ===")
+            log(f"  Sheet shape: {df.shape} (rows x cols)")
+            log(f"  First 5 rows preview:")
+            for i in range(min(5, len(df))):
+                log(f"    Row {i}: {list(df.iloc[i].values)[:10]}")  # Show first 10 columns
+            
             cols = list(df.columns)
+            log(f"  Available columns ({len(cols)}): {cols}")
+            
             mat_col = find_col(cols, ["Material"])
             plant_col = find_col(cols, ["Plant"])
             sloc_col = find_col(cols, ["Storage Location", "Storage Loc"])
-            amt_col = find_col(cols, ["Quantity", "QTY"])
+            amt_col = find_col(cols, ["Closing Stock (pcs)", "Closing Stock", "QTY"])
+            
+            log(f"  Column mapping:")
+            log(f"    Material column: {mat_col}")
+            log(f"    Plant column: {plant_col}")
+            log(f"    Storage Location column: {sloc_col}")
+            log(f"    Quantity column: {amt_col}")
             
             if mat_col and amt_col:
                 df_clean = df.copy()
@@ -174,9 +189,31 @@ class SheetCache:
                 df_clean['sloc'] = df_clean[sloc_col].astype(str).str.strip() if sloc_col else ''
                 df_clean['amount'] = pd.to_numeric(df_clean[amt_col], errors='coerce').fillna(0)
                 
+                # Show data before grouping
+                non_zero = df_clean[df_clean['amount'] != 0]
+                log(f"  Non-zero amount rows: {len(non_zero)}/{len(df_clean)}")
+                if len(non_zero) > 0:
+                    log(f"  Sample non-zero data (first 5):")
+                    for i, row in non_zero.head(5).iterrows():
+                        log(f"    Material={row['material']}, Plant={row['plant']}, Sloc={row['sloc']}, Amount={row['amount']}")
+                
+                # Check for unique storage locations
+                unique_slocs = df_clean['sloc'].unique()
+                log(f"  Unique storage locations ({len(unique_slocs)}): {list(unique_slocs)[:20]}")
+                
                 grouped = df_clean.groupby(['material', 'plant', 'sloc'], dropna=False)['amount'].sum()
                 self.caches['eds'] = grouped.to_dict()
                 log(f"  EDS cache: {len(self.caches['eds'])} entries")
+                
+                # Show sample of cached data
+                if len(self.caches['eds']) > 0:
+                    log(f"  Sample cached entries (first 10):")
+                    for i, (key, val) in enumerate(list(self.caches['eds'].items())[:10]):
+                        log(f"    {key} = {val}")
+            else:
+                log(f"  ERROR: Could not find required columns!")
+                log(f"    Missing Material: {mat_col is None}")
+                log(f"    Missing Quantity: {amt_col is None}")
 
     def get_saldo_awal(self, material, plant, sloc_type):
         if 'saldo_awal' not in self.caches:
@@ -431,6 +468,32 @@ def main():
         required_sheets = ['SALDO AWAL', 'SALDO AWAL MB5B', '13. MB5B', 
                           '14. SALDO AKHIR EDS', 'Output Report INV ARUS BARANG']
         
+        # First, check what sheets are available
+        log("  Checking available sheets in main file...")
+        try:
+            import openpyxl
+            wb_check = openpyxl.load_workbook(main_path, read_only=True)
+            available_sheets = wb_check.sheetnames
+            log(f"  Available sheets ({len(available_sheets)}):")
+            for sheet_name in available_sheets:
+                log(f"    - '{sheet_name}'")
+            wb_check.close()
+            
+            # Check if required sheets exist (case-insensitive)
+            available_lower = {s.lower(): s for s in available_sheets}
+            log(f"  Checking required sheets:")
+            for req_sheet in required_sheets:
+                if req_sheet.lower() in available_lower:
+                    actual_name = available_lower[req_sheet.lower()]
+                    if actual_name != req_sheet:
+                        log(f"    ⚠️  '{req_sheet}' found as '{actual_name}' (case mismatch)")
+                    else:
+                        log(f"    ✓ '{req_sheet}' found")
+                else:
+                    log(f"    ✗ '{req_sheet}' NOT FOUND!")
+        except Exception as e:
+            log(f"  Warning: Could not check sheet names: {str(e)}")
+        
         sheets_dict = {}
         with ThreadPoolExecutor(max_workers=4) as executor:
             futures = [executor.submit(read_sheet, main_path, sheet) for sheet in required_sheets]
@@ -438,6 +501,9 @@ def main():
                 sheet_name, df = future.result()
                 if df is not None:
                     sheets_dict[sheet_name] = df
+                    log(f"  ✓ Loaded '{sheet_name}': {df.shape}")
+                else:
+                    log(f"  ✗ Failed to load '{sheet_name}'")
 
         sheet_cache = SheetCache(sheets_dict)
 
@@ -864,6 +930,9 @@ def main():
         write_row = 9
         totals = defaultdict(float)
         
+        # Initialize EDS tracking
+        eds_hits = {'GS': 0, 'BS': 0, 'total_queries': 0}
+        
         num_materials = len(grouped_materials)
         
         # List of all target columns with new layout (TR00 now has 9 columns)
@@ -968,10 +1037,17 @@ def main():
             bt9_formula = f"=P{write_row}-BS{write_row}"
             ws.cell(row=write_row, column=get_column_index("BT"), value=bt9_formula)
 
-            # STOCK - EDS (updated column references)
+            # STOCK - EDS (updated column references) with tracking
             bv9 = sheet_cache.get_eds(material, plant, "GS")
             bw9 = sheet_cache.get_eds(material, plant, "BS")
             bx9_formula = f"=BV{write_row}+BW{write_row}"
+            
+            # Track EDS hits for debugging
+            eds_hits['total_queries'] += 2
+            if bv9 != 0:
+                eds_hits['GS'] += 1
+            if bw9 != 0:
+                eds_hits['BS'] += 1
             
             ws.cell(row=write_row, column=get_column_index("BV"), value=bv9)
             ws.cell(row=write_row, column=get_column_index("BW"), value=bw9)
@@ -988,6 +1064,20 @@ def main():
             write_row += 1
 
         log(f"Total rows written: {write_row - 9}")
+        
+        # Log EDS cache usage summary
+        log(f"  === EDS Cache Usage Summary ===")
+        log(f"  Total queries: {eds_hits['total_queries']}")
+        log(f"  Non-zero GS values: {eds_hits['GS']} ({eds_hits['GS']/eds_hits['total_queries']*100:.1f}%)")
+        log(f"  Non-zero BS values: {eds_hits['BS']} ({eds_hits['BS']/eds_hits['total_queries']*100:.1f}%)")
+        
+        if 'eds' in sheet_cache.caches:
+            total_eds_entries = len(sheet_cache.caches['eds'])
+            log(f"  Total EDS cache entries: {total_eds_entries}")
+            if total_eds_entries > 0:
+                log(f"  Hit rate: {(eds_hits['GS'] + eds_hits['BS']) / total_eds_entries * 100:.1f}%")
+        else:
+            log(f"  WARNING: EDS cache is empty!")
 
         # Write formulas
         log("Writing formulas...")
@@ -1085,7 +1175,12 @@ def main():
             "file_size": file_size,
             "timestamp": timestamp,
             "unmapped_count": int(unmapped_count),
-            "no_target_count": int(no_target)
+            "no_target_count": int(no_target),
+            "eds_hits": {
+                "total_queries": eds_hits['total_queries'],
+                "gs_hits": eds_hits['GS'],
+                "bs_hits": eds_hits['BS']
+            }
         }
         
         print(json.dumps(result))
