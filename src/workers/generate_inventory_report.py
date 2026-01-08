@@ -1,4 +1,5 @@
 # generate_inventory_report.py - COMPLETE FIXED VERSION
+# Modified: Use report_date from request body instead of MB51 posting date
 # Added "Intra Gudang Masuk" to all storage types (GS00, BS00, AI00, TR00)
 # Group MB51 by (Material, Plant, Storage, Movement Type, Movement Type Text)
 # Then map mv_text -> mv_grouping -> determine target column
@@ -205,12 +206,16 @@ def main():
         files = payload.get("files", {})
         master_inventory = payload.get("master_inventory", [])
         master_movement = payload.get("master_movement", [])
+        report_date = payload.get("report_date")  # Ambil tanggal dari request body
 
         mb51_path = files.get("mb51")
         main_path = files.get("main")
 
         if not mb51_path or not main_path:
             raise ValueError("Payload must include files.mb51 and files.main paths")
+        
+        if not report_date:
+            raise ValueError("Payload must include report_date")
 
         # Load master data
         log("Loading master data...")
@@ -340,9 +345,24 @@ def main():
         
         df_mb51 = df_mb51.rename(columns=rename_dict)
 
+        # Determine report period dari request body
+        log("Determining report period from request body...")
+        report_month_dt = datetime.datetime.strptime(report_date, "%Y-%m-%d")
+        
+        bulan = report_month_dt.strftime("%B").upper()
+        tahun = report_month_dt.year
+        prev_month_dt = report_month_dt
+        prev_month = prev_month_dt.strftime("%B").upper()
+        prev_year = prev_month_dt.year
+        bulan_only = bulan
+
+        log(f"  Report period from request: {bulan} {tahun}")
+
         # Convert data types
         log("Converting data types...")
         
+        # Tidak perlu convert posting_date lagi karena tidak digunakan untuk menentukan periode
+        # Posting date hanya untuk filter jika diperlukan
         try:
             date_numeric = pd.to_numeric(df_mb51["posting_date"], errors='coerce')
             df_mb51["posting_date"] = pd.to_datetime(
@@ -353,7 +373,7 @@ def main():
             )
             
             valid_dates = df_mb51["posting_date"].notna().sum()
-            log(f"  ✓ Converted {valid_dates}/{len(df_mb51)} dates successfully")
+            log(f"  ✓ Converted {valid_dates}/{len(df_mb51)} dates successfully (for reference only)")
                 
         except Exception as e:
             log(f"  ERROR converting dates: {str(e)}")
@@ -405,22 +425,6 @@ def main():
             df_inv_lookup[['plant', 'area', 'kode_dist', 'profit_center']], 
             on='plant', how='left'
         )
-
-        # Determine report period
-        log("Determining report period...")
-        if df_mb51["posting_date"].dropna().empty:
-            report_month_dt = datetime.datetime.now()
-        else:
-            report_month_dt = df_mb51["posting_date"].dropna().max()
-        
-        bulan = report_month_dt.strftime("%B").upper()
-        tahun = report_month_dt.year
-        prev_month_dt = report_month_dt
-        prev_month = prev_month_dt.strftime("%B").upper()
-        prev_year = prev_month_dt.year
-        bulan_only = bulan
-
-        log(f"  Report period: {bulan} {tahun}")
 
         # Read main file sheets
         log("Reading main file sheets...")
@@ -1086,7 +1090,7 @@ def main():
         
         print(json.dumps(result))
         sys.stdout.flush()
-        log("✓ Report completed successfully with Intra Gudang Masuk in all storage types (GS00, BS00, AI00, TR00)!")
+        log("✓ Report completed successfully using report_date from request body!")
 
     except Exception as e:
         tb = traceback.format_exc()

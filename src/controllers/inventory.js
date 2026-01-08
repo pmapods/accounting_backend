@@ -13,8 +13,8 @@ const vs = require('fs-extra')
 const { spawn } = require('child_process')
 const path = require('path')
 const { APP_BE } = process.env
-// const pythonPath = 'python'
-const pythonPath = '/usr/bin/python3'
+const pythonPath = 'python'
+// const pythonPath = '/usr/bin/python3'
 const borderStyles = {
   top: { style: 'thin' },
   left: { style: 'thin' },
@@ -642,7 +642,7 @@ module.exports = {
     //   return response(res, "You're not super administrator", {}, 404, false)
     // }
   },
-  generateInventoryReport: async (req, res) => {
+  generateInventoryReportOld: async (req, res) => {
     try {
       const username = req.user.name
       const { listPlant, date } = req.body
@@ -665,7 +665,7 @@ module.exports = {
           return response(res, 'Master Movement kosong', {}, 400, false)
         }
 
-        // 🔧 PERBAIKAN: Buat fungsi yang return Promise untuk setiap plant
+        // PERBAIKAN: Buat fungsi yang return Promise untuk setiap plant
         const processPlant = (plant) => {
           return new Promise(async (resolve, reject) => {
             try {
@@ -824,7 +824,238 @@ module.exports = {
           })
         }
 
-        // 🔧 PERBAIKAN: Jalankan semua plant SECARA BERURUTAN dengan for...of
+        // PERBAIKAN: Jalankan semua plant SECARA BERURUTAN dengan for...of
+        console.log(`Starting processing for ${listPlant.length} plants...`)
+
+        for (const plant of listPlant) {
+          console.log(`\n=== Processing plant: ${plant} ===`)
+          const result = await processPlant(plant)
+
+          if (result.success) {
+            cekGenerate.push(result)
+            console.log(`✓ ${plant} SUCCESS`)
+          } else {
+            cekFalse.push({ text: result.error, plant: result.plant })
+            console.log(`✗ ${plant} FAILED: ${result.error}`)
+          }
+        }
+
+        console.log('\n=== ALL PLANTS PROCESSED ===')
+        console.log(`Success: ${cekGenerate.length}`)
+        console.log(`Failed: ${cekFalse.length}`)
+
+        // Response berdasarkan hasil
+        if (cekGenerate.length > 0 && cekFalse.length === 0) {
+          return response(res, 'Semua report berhasil di-generate', {
+            success: cekGenerate.length,
+            results: cekGenerate
+          }, 200, true)
+        } else if (cekGenerate.length > 0 && cekFalse.length > 0) {
+          return response(res, 'Sebagian report berhasil di-generate', {
+            success: cekGenerate.length,
+            failed: cekFalse.length,
+            successList: cekGenerate,
+            failedList: cekFalse
+          }, 207, true) // 207 Multi-Status
+        } else {
+          return response(res, 'Semua report gagal di-generate', {
+            failed: cekFalse.length,
+            failedList: cekFalse
+          }, 400, false)
+        }
+      } else {
+        return response(res, 'Parameter yang dikirim tidak lengkap', {}, 400, false)
+      }
+    } catch (err) {
+      console.error('Controller error:', err)
+      return response(res, err.message, {}, 500, false)
+    }
+  },
+  generateInventoryReport: async (req, res) => {
+    try {
+      const username = req.user.name
+      const { listPlant, date } = req.body
+
+      if (date !== undefined && listPlant !== undefined && listPlant.length > 0) {
+        const cekGenerate = []
+        const cekFalse = []
+        const startDate = moment(date).startOf('month').toDate()
+        const endDate = moment(date).endOf('month').toDate()
+
+        // Ambil master data dari database SEKALI saja (di luar loop)
+        const masterInventory = await inventory.findAll()
+        const masterMovement = await movement.findAll()
+
+        // Validasi master data
+        if (!masterInventory || masterInventory.length === 0) {
+          return response(res, 'Master Inventory kosong', {}, 400, false)
+        }
+        if (!masterMovement || masterMovement.length === 0) {
+          return response(res, 'Master Movement kosong', {}, 400, false)
+        }
+
+        // PERBAIKAN: Buat fungsi yang return Promise untuk setiap plant
+        const processPlant = (plant) => {
+          return new Promise(async (resolve, reject) => {
+            try {
+              const files = await report_inven.findAll({
+                where: {
+                  [Op.and]: [
+                    { plant: plant },
+                    { date_report: { [Op.between]: [startDate, endDate] } },
+                    { status: 1 }
+                  ]
+                }
+              })
+
+              const mb51 = files.find(f => f.type === 'mb51')
+              const main = files.find(f => f.type === 'main')
+
+              if (!mb51 || !main) {
+                resolve({ success: false, error: 'MB51 atau Main file belum diupload', plant })
+                return
+              }
+
+              // Buat record baru untuk hasil generate
+              const report = await report_inven.create({
+                name: 'output_report_inventory',
+                path: '',
+                type: 'output',
+                status: 0 // Processing
+              })
+
+              console.log(`[${plant}] Starting Python worker...`)
+
+              // Debug PATH
+              console.log('=== DEBUG PATH ===')
+              console.log('PATH:', process.env.PATH)
+              console.log('Which python:', require('child_process').execSync('which python || echo "not found"').toString().trim())
+              console.log('==================')
+
+              // Spawn python worker
+              const py = spawn(pythonPath, [
+                path.join(__dirname, '../workers/generate_inventory_report.py')
+              ])
+
+              // TAMBAHAN: Kirim report_date ke Python
+              const payload = {
+                report_id: report.id,
+                files: {
+                  mb51: mb51.path,
+                  main: main.path
+                },
+                master_inventory: masterInventory.map(m => m.toJSON()),
+                master_movement: masterMovement.map(m => m.toJSON()),
+                report_date: moment(date).format('YYYY-MM-DD') // TAMBAHKAN INI
+              }
+
+              console.log(`[${plant}] Sending payload to Python with report_date:`, payload.report_date)
+
+              py.stdin.write(JSON.stringify(payload))
+              py.stdin.end()
+
+              let stdoutData = ''
+              let stderrData = ''
+
+              py.stdout.on('data', data => {
+                stdoutData += data.toString()
+                console.log(`[${plant}] Python stdout:`, data.toString())
+              })
+
+              py.stderr.on('data', data => {
+                stderrData += data.toString()
+                console.log(`[${plant}] Python stderr:`, data.toString())
+              })
+
+              py.on('error', async (error) => {
+                console.error(`[${plant}] Failed to start Python process:`, error)
+                await report.destroy()
+                resolve({ success: false, error: 'Failed to start Python process: ' + error.message, plant })
+              })
+
+              py.on('close', async (code) => {
+                console.log(`[${plant}] Python process exited with code ${code}`)
+
+                try {
+                  if (code === 0) {
+                    // Parse JSON from stdout
+                    const jsonMatch = stdoutData.match(/\{[\s\S]*\}/)
+                    if (!jsonMatch) {
+                      throw new Error('No JSON found in Python output')
+                    }
+
+                    const result = JSON.parse(jsonMatch[0])
+
+                    if (!result.success) {
+                      throw new Error(result.error || 'Unknown Python error')
+                    }
+
+                    console.log(`[${plant}] Report generated successfully:`, result.output_path)
+
+                    // Update database
+                    await report.update({
+                      path: result.output_path,
+                      status: 2, // Success
+                      name: `${plant}_output_report_inventory_${result.timestamp}`,
+                      date_report: startDate,
+                      plant: plant,
+                      user_upload: username
+                    })
+
+                    resolve({
+                      success: true,
+                      plant,
+                      output_path: result.output_path,
+                      rows_written: result.rows_written,
+                      report_month: result.report_month
+                    })
+                  } else {
+                    // Python exited with error
+                    let errorMsg = 'Python process failed'
+
+                    try {
+                      const jsonMatch = stdoutData.match(/\{[\s\S]*\}/)
+                      if (jsonMatch) {
+                        const errorResult = JSON.parse(jsonMatch[0])
+                        errorMsg = errorResult.error || errorMsg
+                        console.error(`[${plant}] Python error details:`, errorResult.trace)
+                      }
+                    } catch (e) {
+                      console.error(`[${plant}] Could not parse Python error output`)
+                    }
+
+                    await report.destroy()
+                    resolve({ success: false, error: errorMsg, plant })
+                  }
+                } catch (parseError) {
+                  console.error(`[${plant}] Error parsing Python output:`, parseError)
+                  await report.destroy()
+                  resolve({ success: false, error: 'Failed to parse Python output: ' + parseError.message, plant })
+                }
+              })
+
+              // Set timeout (10 minutes)
+              const timeoutId = setTimeout(() => {
+                if (!py.killed) {
+                  console.log(`[${plant}] Python process timeout, killing...`)
+                  py.kill()
+                  report.destroy()
+                  resolve({ success: false, error: 'Report generation timeout', plant })
+                }
+              }, 600000)
+
+              // Clear timeout saat process selesai
+              py.on('exit', () => {
+                clearTimeout(timeoutId)
+              })
+            } catch (err) {
+              console.error(`[${plant}] Error:`, err)
+              reject(err)
+            }
+          })
+        }
+
+        // PERBAIKAN: Jalankan semua plant SECARA BERURUTAN dengan for...of
         console.log(`Starting processing for ${listPlant.length} plants...`)
 
         for (const plant of listPlant) {
