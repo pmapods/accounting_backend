@@ -919,679 +919,6 @@ module.exports = {
       return response(res, error.message, {}, 500, false)
     }
   },
-  getDashboardTeen: async (req, res) => {
-    try {
-      // Extract and normalize query parameters
-      const extractParam = (param) => {
-        if (typeof param === 'object') return Object.values(param)[0]
-        return param || ''
-      }
-
-      const {
-        limit = 10,
-        page = 1,
-        search = '',
-        sort = 'id',
-        typeSort = 'DESC',
-        time = '',
-        tipe = 'daily',
-        find = ''
-      } = {
-        limit: parseInt(req.query.limit) || 10,
-        page: parseInt(req.query.page) || 1,
-        search: extractParam(req.query.search),
-        sort: extractParam(req.query.sort) || 'id',
-        typeSort: extractParam(req.query.typeSort) || 'DESC',
-        time: extractParam(req.query.time),
-        tipe: extractParam(req.query.tipe) || 'daily',
-        find: extractParam(req.query.find)
-      }
-
-      const { level, kode, name } = req.user
-      const offset = (page - 1) * limit
-
-      // Handle level 4 and 5 (SA and Kasir)
-      if (level === 4 || level === 5) {
-        const userType = level === 4 ? 'sa' : 'kasir'
-
-        // Get depo info
-        const depoQuery = `
-          SELECT status_depo, kode_plant 
-          FROM depos
-          WHERE kode_plant = ? OR kode_depo = ?
-          LIMIT 1
-        `
-        const [depoResult] = await sequelize.query(depoQuery, {
-          replacements: [kode, kode],
-          type: QueryTypes.SELECT
-        })
-
-        if (!depoResult) {
-          return response(res, 'user tidak terhubung dengan depo manapun', {}, 404, false)
-        }
-
-        // Get documents with proper limit for level 4
-        const documentLimit = level === 4 ? 100 : limit
-        const documentOffset = level === 4 ? (page - 1) * 100 : offset
-
-        const documentsQuery = `
-          SELECT 
-            id,
-            nama_dokumen,
-            jenis_dokumen,
-            postDokumen,
-            divisi,
-            status_depo,
-            uploadedBy,
-            status,
-            access,
-            createdAt,
-            updatedAt
-          FROM documents
-          WHERE nama_dokumen LIKE ?
-            AND (access LIKE ? OR access IS NULL)
-            AND status_depo = ?
-            AND uploadedBy = ?
-            AND jenis_dokumen LIKE ?
-            AND status != 'inactive'
-          ORDER BY ${sort} ${typeSort}
-          LIMIT ? OFFSET ?
-        `
-        const documents = await sequelize.query(documentsQuery, {
-          replacements: [
-            `%${search}%`,
-            `%${kode}%`,
-            depoResult.status_depo,
-            userType,
-            `%${tipe}%`,
-            documentLimit,
-            documentOffset
-          ],
-          type: QueryTypes.SELECT
-        })
-
-        // Count total documents
-        const countQuery = `
-          SELECT COUNT(*) as total FROM documents
-          WHERE nama_dokumen LIKE ?
-            AND (access LIKE ? OR access IS NULL)
-            AND status_depo = ?
-            AND uploadedBy = ?
-            AND jenis_dokumen LIKE ?
-            AND status != 'inactive'
-        `
-        const [countResult] = await sequelize.query(countQuery, {
-          replacements: [
-            `%${search}%`,
-            `%${kode}%`,
-            depoResult.status_depo,
-            userType,
-            `%${tipe}%`
-          ],
-          type: QueryTypes.SELECT
-        })
-
-        const results = {
-          rows: documents,
-          count: countResult.total
-        }
-
-        const pageInfo = pagination('/dokumen/get', req.query, page, limit, results.count)
-
-        // Calculate time for activity check
-        let timeUser = new Date(moment().format('YYYY-MM-DD 00:00'))
-        let timeUserTomo = new Date(moment().add(1, 'days').format('YYYY-MM-DD 00:00'))
-
-        if (tipe === 'monthly') {
-          timeUser = new Date(moment().startOf('month').format('YYYY-MM-DD'))
-          timeUserTomo = new Date(moment().add(1, 'month').startOf('month').format('YYYY-MM-DD'))
-        }
-
-        // Get or create activity
-        const activityQuery = `
-          SELECT * FROM activities
-          WHERE kode_plant = ?
-            AND tipe = ?
-            AND jenis_dokumen = ?
-            AND createdAt > ?
-            AND createdAt < ?
-        `
-        let cek = await sequelize.query(activityQuery, {
-          replacements: [kode, userType, tipe, timeUser, timeUserTomo],
-          type: QueryTypes.SELECT
-        })
-
-        if (cek.length === 0) {
-          // Lock previous activities if daily
-          if (tipe === 'daily') {
-            const monthStart = new Date(moment().startOf('month').format('YYYY-MM-DD'))
-            const monthEnd = new Date(moment().add(1, 'month').startOf('month').format('YYYY-MM-DD'))
-
-            const findQuery = `
-              SELECT id FROM activities
-              WHERE kode_plant = ?
-                AND tipe = ?
-                AND jenis_dokumen = ?
-                AND createdAt > ?
-                AND createdAt < ?
-            `
-            const findResults = await sequelize.query(findQuery, {
-              replacements: [kode, userType, tipe, monthStart, monthEnd],
-              type: QueryTypes.SELECT
-            })
-
-            if (findResults.length > 0) {
-              const ids = findResults.map(x => x.id)
-              await sequelize.query(`
-                UPDATE activities 
-                SET access = 'lock'
-                WHERE id IN (?)
-              `, {
-                replacements: [ids]
-              })
-            }
-          }
-
-          // Create new activity
-          const insertQuery = `
-            INSERT INTO activities (kode_plant, status, documentDate, access, jenis_dokumen, tipe, createdAt, updatedAt)
-            VALUES (?, 'Belum Upload', ?, 'unlock', ?, ?, NOW(), NOW())
-          `
-          await sequelize.query(insertQuery, {
-            replacements: [
-              kode,
-              new Date(moment().subtract(1, 'days').format('YYYY-MM-DD')),
-              tipe,
-              userType
-            ]
-          })
-
-          // Refresh cek
-          cek = await sequelize.query(activityQuery, {
-            replacements: [kode, userType, tipe, timeUser, timeUserTomo],
-            type: QueryTypes.SELECT
-          })
-        }
-
-        return response(res, 'list dokumen', { results, pageInfo, cek })
-      }
-
-      // Handle level 1, 2, 3 (Admin, Supervisor, PIC)
-      if (level >= 1 && level <= 3) {
-        // Get PICs based on level
-        let picQuery = ''
-        let picCountQuery = ''
-        let picReplacements = []
-
-        if (level === 3) {
-          picQuery = `
-            SELECT 
-              p.id,
-              p.pic,
-              p.spv,
-              p.divisi,
-              p.kode_depo,
-              p.nama_depo,
-              p.status,
-              p.createdAt as p_createdAt,
-              p.updatedAt as p_updatedAt,
-              d.id as depo_id,
-              d.kode_depo as depo_kode_depo,
-              d.nama_depo as depo_nama_depo,
-              d.home_town,
-              d.channel,
-              d.distribution,
-              d.status_depo,
-              d.profit_center,
-              d.kode_plant,
-              d.kode_sap_1,
-              d.kode_sap_2,
-              d.nama_grom,
-              d.nama_bm,
-              d.nama_ass,
-              d.nama_pic_1,
-              d.nama_pic_2,
-              d.nama_pic_3,
-              d.nama_pic_4,
-              d.createdAt as depo_createdAt,
-              d.updatedAt as depo_updatedAt
-            FROM pics p
-            INNER JOIN depos d ON p.kode_depo = d.kode_plant
-            WHERE p.pic = ?
-              AND (d.kode_plant LIKE ? OR d.nama_depo LIKE ? OR d.home_town LIKE ?)
-            LIMIT ? OFFSET ?
-          `
-          picCountQuery = `
-            SELECT COUNT(*) as total
-            FROM pics p
-            INNER JOIN depos d ON p.kode_depo = d.kode_plant
-            WHERE p.pic = ?
-              AND (d.kode_plant LIKE ? OR d.nama_depo LIKE ? OR d.home_town LIKE ?)
-          `
-          picReplacements = [name, `%${find}%`, `%${find}%`, `%${find}%`, limit, offset]
-        } else if (level === 2) {
-          picQuery = `
-            SELECT 
-              p.id,
-              p.pic,
-              p.spv,
-              p.divisi,
-              p.kode_depo,
-              p.nama_depo,
-              p.status,
-              p.createdAt as p_createdAt,
-              p.updatedAt as p_updatedAt,
-              d.id as depo_id,
-              d.kode_depo as depo_kode_depo,
-              d.nama_depo as depo_nama_depo,
-              d.home_town,
-              d.channel,
-              d.distribution,
-              d.status_depo,
-              d.profit_center,
-              d.kode_plant,
-              d.kode_sap_1,
-              d.kode_sap_2,
-              d.nama_grom,
-              d.nama_bm,
-              d.nama_ass,
-              d.nama_pic_1,
-              d.nama_pic_2,
-              d.nama_pic_3,
-              d.nama_pic_4,
-              d.createdAt as depo_createdAt,
-              d.updatedAt as depo_updatedAt
-            FROM pics p
-            INNER JOIN depos d ON p.kode_depo = d.kode_plant
-            WHERE p.spv = ?
-              AND (d.kode_plant LIKE ? OR d.nama_depo LIKE ? OR d.home_town LIKE ?)
-            LIMIT ? OFFSET ?
-          `
-          picCountQuery = `
-            SELECT COUNT(*) as total
-            FROM pics p
-            INNER JOIN depos d ON p.kode_depo = d.kode_plant
-            WHERE p.spv = ?
-              AND (d.kode_plant LIKE ? OR d.nama_depo LIKE ? OR d.home_town LIKE ?)
-          `
-          picReplacements = [name, `%${find}%`, `%${find}%`, `%${find}%`, limit, offset]
-        } else { // level 1
-          picQuery = `
-            SELECT 
-              p.id,
-              p.pic,
-              p.spv,
-              p.divisi,
-              p.kode_depo,
-              p.nama_depo,
-              p.status,
-              p.createdAt as p_createdAt,
-              p.updatedAt as p_updatedAt,
-              d.id as depo_id,
-              d.kode_depo as depo_kode_depo,
-              d.nama_depo as depo_nama_depo,
-              d.home_town,
-              d.channel,
-              d.distribution,
-              d.status_depo,
-              d.profit_center,
-              d.kode_plant,
-              d.kode_sap_1,
-              d.kode_sap_2,
-              d.nama_grom,
-              d.nama_bm,
-              d.nama_ass,
-              d.nama_pic_1,
-              d.nama_pic_2,
-              d.nama_pic_3,
-              d.nama_pic_4,
-              d.createdAt as depo_createdAt,
-              d.updatedAt as depo_updatedAt
-            FROM pics p
-            INNER JOIN depos d ON p.kode_depo = d.kode_plant
-            WHERE p.spv LIKE '%%'
-              AND (d.kode_plant LIKE ? OR d.nama_depo LIKE ? OR d.home_town LIKE ?)
-            LIMIT ? OFFSET ?
-          `
-          picCountQuery = `
-            SELECT COUNT(*) as total
-            FROM pics p
-            INNER JOIN depos d ON p.kode_depo = d.kode_plant
-            WHERE p.spv LIKE '%%'
-              AND (d.kode_plant LIKE ? OR d.nama_depo LIKE ? OR d.home_town LIKE ?)
-          `
-          picReplacements = [`%${find}%`, `%${find}%`, `%${find}%`, limit, offset]
-        }
-
-        const picResults = await sequelize.query(picQuery, {
-          replacements: picReplacements,
-          type: QueryTypes.SELECT
-        })
-
-        // Count total PICs
-        const [countPicResult] = await sequelize.query(picCountQuery, {
-          replacements: picReplacements.slice(0, -2),
-          type: QueryTypes.SELECT
-        })
-
-        // Transform pic results to match ORM structure
-        const transformedPics = picResults.map(row => ({
-          id: row.id,
-          pic: row.pic,
-          spv: row.spv,
-          divisi: row.divisi,
-          kode_depo: row.kode_depo,
-          nama_depo: row.nama_depo,
-          status: row.status,
-          createdAt: row.p_createdAt,
-          updatedAt: row.p_updatedAt,
-          depo: {
-            id: row.depo_id,
-            kode_depo: row.depo_kode_depo,
-            nama_depo: row.depo_nama_depo,
-            home_town: row.home_town,
-            channel: row.channel,
-            distribution: row.distribution,
-            status_depo: row.status_depo,
-            profit_center: row.profit_center,
-            kode_plant: row.kode_plant,
-            kode_sap_1: row.kode_sap_1,
-            kode_sap_2: row.kode_sap_2,
-            nama_grom: row.nama_grom,
-            nama_bm: row.nama_bm,
-            nama_ass: row.nama_ass,
-            nama_pic_1: row.nama_pic_1,
-            nama_pic_2: row.nama_pic_2,
-            nama_pic_3: row.nama_pic_3,
-            nama_pic_4: row.nama_pic_4,
-            createdAt: row.depo_createdAt,
-            updatedAt: row.depo_updatedAt
-          }
-        }))
-
-        const results = {
-          rows: transformedPics,
-          count: countPicResult.total
-        }
-
-        const pageInfo = pagination('/dashboard/get', req.query, page, limit, results.count)
-
-        if (!transformedPics.length) {
-          return response(res, 'depo no found', {}, 404, false)
-        }
-
-        // Get depos array - level 3 uses depo object, level 1,2 uses pic object
-        // IMPORTANT: kode lama pakai depos[i].kode_plant atau depos[i].kode_depo langsung
-        const depos = level === 3 ? transformedPics.map(x => x.depo) : transformedPics
-
-        // Create array of kode_depo that matches the depos array length
-        const kodeDepos = level === 3
-          ? depos.map(x => x.kode_plant)
-          : depos.map(x => x.kode_depo)
-
-        // Deduplicate for batch queries only
-        const uniqueKodeDeposSet = new Set(kodeDepos)
-        let uniqueKodeDepos = Array.from(uniqueKodeDeposSet)
-
-        // Calculate time range
-        let now = time ? moment(time).startOf('day').toDate() : moment().startOf('day').toDate()
-        let tomo = time ? moment(time).add(1, 'days').startOf('day').toDate() : moment().add(1, 'days').startOf('day').toDate()
-
-        if (tipe === 'monthly') {
-          now = time ? moment(time).startOf('month').toDate() : moment().startOf('month').toDate()
-          tomo = time ? moment(time).endOf('month').toDate() : moment().endOf('month').toDate()
-        }
-
-        // Get unique kode depos for batch queries
-        uniqueKodeDepos = [...new Set(kodeDepos)]
-
-        // BATCH QUERY: Get all depos data at once
-        const depoDataQuery = `
-          SELECT 
-            d.id,
-            d.kode_depo,
-            d.nama_depo,
-            d.home_town,
-            d.channel,
-            d.distribution,
-            d.status_depo,
-            d.profit_center,
-            d.kode_plant,
-            d.kode_sap_1,
-            d.kode_sap_2,
-            d.nama_grom,
-            d.nama_bm,
-            d.nama_ass,
-            d.nama_pic_1,
-            d.nama_pic_2,
-            d.nama_pic_3,
-            d.nama_pic_4,
-            d.createdAt,
-            d.updatedAt
-          FROM depos d
-          WHERE d.kode_plant IN (?)
-        `
-
-        // BATCH QUERY: Get all activities at once (for SA and KASIR)
-        const activitiesQuery = `
-          SELECT 
-            a.id,
-            a.kode_plant,
-            a.progress,
-            a.documentDate,
-            a.status,
-            a.access,
-            a.jenis_dokumen,
-            a.tipe,
-            a.createdAt,
-            a.updatedAt
-          FROM activities a
-          WHERE a.kode_plant IN (?)
-            AND a.tipe IN ('sa', 'kasir')
-            AND a.jenis_dokumen LIKE ?
-            AND a.createdAt > ?
-            AND a.createdAt < ?
-          ORDER BY a.kode_plant, a.tipe, a.createdAt DESC
-        `
-
-        // BATCH QUERY: Get all documents at once
-        const documentsQuery = `
-          SELECT 
-            doc.id,
-            doc.nama_dokumen,
-            doc.jenis_dokumen,
-            doc.postDokumen,
-            doc.divisi,
-            doc.status_depo,
-            doc.uploadedBy,
-            doc.status,
-            doc.access,
-            doc.createdAt,
-            doc.updatedAt
-          FROM documents doc
-          WHERE doc.nama_dokumen LIKE ?
-            AND doc.jenis_dokumen LIKE ?
-            AND doc.uploadedBy IN ('sa', 'kasir')
-            AND doc.status != 'inactive'
-        `
-
-        // Execute batch queries in parallel
-        const [allDepos, allActivities, allDocuments] = await Promise.all([
-          sequelize.query(depoDataQuery, {
-            replacements: [uniqueKodeDepos],
-            type: QueryTypes.SELECT
-          }),
-          sequelize.query(activitiesQuery, {
-            replacements: [uniqueKodeDepos, `%${tipe}%`, now, tomo],
-            type: QueryTypes.SELECT
-          }),
-          sequelize.query(documentsQuery, {
-            replacements: [`%${search}%`, `%${tipe}%`],
-            type: QueryTypes.SELECT
-          })
-        ])
-
-        // Get all activity IDs for batch fetching paths
-        const activityIds = allActivities.map(a => a.id)
-        let allPaths = []
-
-        if (activityIds.length > 0) {
-          const pathsQuery = `
-            SELECT 
-              p.id,
-              p.dokumen,
-              p.activityId,
-              p.kode_depo,
-              p.alasan,
-              p.status_dokumen,
-              p.path,
-              p.createdAt,
-              p.updatedAt
-            FROM Paths p
-            WHERE p.activityId IN (?)
-          `
-
-          allPaths = await sequelize.query(pathsQuery, {
-            replacements: [activityIds],
-            type: QueryTypes.SELECT
-          })
-        }
-
-        // Group data by keys for fast lookup
-        const depoMap = {}
-        allDepos.forEach(d => {
-          depoMap[d.kode_plant] = d
-        })
-
-        const activityMap = {}
-        allActivities.forEach(a => {
-          const key = `${a.kode_plant}_${a.tipe}`
-          if (!activityMap[key]) {
-            activityMap[key] = []
-          }
-          activityMap[key].push(a)
-        })
-
-        const pathMap = {}
-        allPaths.forEach(p => {
-          if (!pathMap[p.activityId]) {
-            pathMap[p.activityId] = []
-          }
-          // Apply limit 50 per activity
-          if (pathMap[p.activityId].length < 50) {
-            pathMap[p.activityId].push(p)
-          }
-        })
-
-        const documentMap = {}
-        allDocuments.forEach(doc => {
-          const key = `${doc.status_depo}_${doc.uploadedBy}`
-          if (!documentMap[key]) {
-            documentMap[key] = []
-          }
-          documentMap[key].push(doc)
-        })
-
-        // Build SA and KASIR arrays with OLD CODE LOGIC
-        // Logic from old code analysis:
-        // - Always push result.rows[0] to sa/kasir (could be undefined)
-        // - Only add to 'all' if result.rows[0] !== null && !== undefined
-        // - Since both loops run separately, if both have no activity, both push undefined
-        // BUT looking at the condition: only non-null/undefined go to 'all'
-        // So depo without activity should push to ONE array only (to avoid duplicate in counting)
-        const sa = []
-        const kasir = []
-
-        // First pass: identify which depos have activities
-        const depoActivityStatus = {}
-        for (let i = 0; i < depos.length; i++) {
-          const kodeDepo = level === 3 ? depos[i].kode_plant : depos[i].kode_depo
-          const saActivities = activityMap[`${kodeDepo}_sa`] || []
-          const kasirActivities = activityMap[`${kodeDepo}_kasir`] || []
-
-          depoActivityStatus[i] = {
-            hasSA: saActivities.length > 0,
-            hasKasir: kasirActivities.length > 0
-          }
-        }
-
-        // Build SA array
-        for (let i = 0; i < depos.length; i++) {
-          const kodeDepo = level === 3 ? depos[i].kode_plant : depos[i].kode_depo
-          const depoData = depoMap[kodeDepo]
-          const status = depoActivityStatus[i]
-
-          const saActivities = activityMap[`${kodeDepo}_sa`] || []
-          const saActivity = saActivities[0]
-
-          if (depoData && saActivity) {
-            // SA has activity - push full data
-            const saPaths = pathMap[saActivity.id] || []
-            const saDocuments = documentMap[`${depoData.status_depo}_sa`] || []
-
-            sa.push({
-              ...depoData,
-              active: [{
-                ...saActivity,
-                doc: saPaths
-              }],
-              dokumen: saDocuments
-            })
-          } else if (depoData && !status.hasSA && !status.hasKasir) {
-            // Neither SA nor Kasir has activity - push depo to SA only (not kasir)
-            const saDocuments = documentMap[`${depoData.status_depo}_sa`] || []
-            sa.push({
-              ...depoData,
-              active: [],
-              dokumen: saDocuments
-            })
-          } else {
-            // No SA activity but Kasir has activity - push undefined to SA
-            sa.push(undefined)
-          }
-        }
-
-        // Build KASIR array
-        for (let i = 0; i < depos.length; i++) {
-          const kodeDepo = level === 3 ? depos[i].kode_plant : depos[i].kode_depo
-          const depoData = depoMap[kodeDepo]
-          const status = depoActivityStatus[i]
-
-          const kasirActivities = activityMap[`${kodeDepo}_kasir`] || []
-          const kasirActivity = kasirActivities[0]
-
-          if (depoData && kasirActivity) {
-            // KASIR has activity - push full data
-            const kasirPaths = pathMap[kasirActivity.id] || []
-            const kasirDocuments = documentMap[`${depoData.status_depo}_kasir`] || []
-
-            kasir.push({
-              ...depoData,
-              active: [{
-                ...kasirActivity,
-                doc: kasirPaths
-              }],
-              dokumen: kasirDocuments
-            })
-          } else if (depoData && !status.hasSA && !status.hasKasir) {
-            // Neither has activity - already pushed to SA, push undefined here
-            kasir.push(undefined)
-          } else {
-            // No Kasir activity - push undefined
-            kasir.push(undefined)
-          }
-        }
-
-        // Build all array (filter out nulls/undefined like ORM code)
-        const all = [...sa, ...kasir].filter(x => x !== null && x !== undefined)
-
-        return response(res, 'list dokumen', { results, sa, kasir, all, pageInfo })
-      }
-    } catch (error) {
-      console.error('Dashboard error:', error)
-      return response(res, error.message, {}, 500, false)
-    }
-  },
   getDashboard: async (req, res) => {
     try {
       // Extract and normalize query parameters
@@ -1608,7 +935,8 @@ module.exports = {
         typeSort = 'DESC',
         time = '',
         tipe = 'daily',
-        find = ''
+        find = '',
+        statusUpload = 'all'
       } = {
         limit: parseInt(req.query.limit) || 10,
         page: parseInt(req.query.page) || 1,
@@ -1617,17 +945,17 @@ module.exports = {
         typeSort: extractParam(req.query.typeSort) || 'DESC',
         time: extractParam(req.query.time),
         tipe: extractParam(req.query.tipe) || 'daily',
-        find: extractParam(req.query.find)
+        find: extractParam(req.query.find),
+        statusUpload: extractParam(req.query.statusUpload) || 'all'
       }
 
       const { level, kode, name } = req.user
-      const offset = (page - 1) * limit
 
-      // Handle level 4 and 5 (SA and Kasir)
+      // Handle level 4 and 5 (SA dan Kasir)
       if (level === 4 || level === 5) {
+        // const offset = (page - 1) * limit
         const userType = level === 4 ? 'sa' : 'kasir'
 
-        // Get depo info
         const depoQuery = `
           SELECT status_depo, kode_plant 
           FROM depos
@@ -1643,20 +971,10 @@ module.exports = {
           return response(res, 'user tidak terhubung dengan depo manapun', {}, 404, false)
         }
 
-        // Get ALL documents without limit for level 4 and 5
         const documentsQuery = `
           SELECT 
-            id,
-            nama_dokumen,
-            jenis_dokumen,
-            postDokumen,
-            divisi,
-            status_depo,
-            uploadedBy,
-            status,
-            access,
-            createdAt,
-            updatedAt
+            id, nama_dokumen, jenis_dokumen, postDokumen, divisi,
+            status_depo, uploadedBy, status, access, createdAt, updatedAt
           FROM documents
           WHERE nama_dokumen LIKE ?
             AND (access LIKE ? OR access IS NULL)
@@ -1667,17 +985,10 @@ module.exports = {
           ORDER BY ${sort} ${typeSort}
         `
         const documents = await sequelize.query(documentsQuery, {
-          replacements: [
-            `%${search}%`,
-            `%${kode}%`,
-            depoResult.status_depo,
-            userType,
-            `%${tipe}%`
-          ],
+          replacements: [`%${search}%`, `%${kode}%`, depoResult.status_depo, userType, `%${tipe}%`],
           type: QueryTypes.SELECT
         })
 
-        // Count total documents
         const countQuery = `
           SELECT COUNT(*) as total FROM documents
           WHERE nama_dokumen LIKE ?
@@ -1688,13 +999,7 @@ module.exports = {
             AND status != 'inactive'
         `
         const [countResult] = await sequelize.query(countQuery, {
-          replacements: [
-            `%${search}%`,
-            `%${kode}%`,
-            depoResult.status_depo,
-            userType,
-            `%${tipe}%`
-          ],
+          replacements: [`%${search}%`, `%${kode}%`, depoResult.status_depo, userType, `%${tipe}%`],
           type: QueryTypes.SELECT
         })
 
@@ -1705,7 +1010,6 @@ module.exports = {
 
         const pageInfo = pagination('/dokumen/get', req.query, page, limit, results.count)
 
-        // Calculate time for activity check
         let timeUser = new Date(moment().format('YYYY-MM-DD 00:00'))
         let timeUserTomo = new Date(moment().add(1, 'days').format('YYYY-MM-DD 00:00'))
 
@@ -1714,7 +1018,6 @@ module.exports = {
           timeUserTomo = new Date(moment().add(1, 'month').startOf('month').format('YYYY-MM-DD'))
         }
 
-        // Get or create activity
         const activityQuery = `
           SELECT * FROM activities
           WHERE kode_plant = ?
@@ -1729,7 +1032,6 @@ module.exports = {
         })
 
         if (cek.length === 0) {
-          // Lock previous activities if daily
           if (tipe === 'daily') {
             const monthStart = new Date(moment().startOf('month').format('YYYY-MM-DD'))
             const monthEnd = new Date(moment().add(1, 'month').startOf('month').format('YYYY-MM-DD'))
@@ -1749,17 +1051,12 @@ module.exports = {
 
             if (findResults.length > 0) {
               const ids = findResults.map(x => x.id)
-              await sequelize.query(`
-                UPDATE activities 
-                SET access = 'lock'
-                WHERE id IN (?)
-              `, {
+              await sequelize.query('UPDATE activities SET access = \'lock\' WHERE id IN (?)', {
                 replacements: [ids]
               })
             }
           }
 
-          // Create new activity
           const insertQuery = `
             INSERT INTO activities (kode_plant, status, documentDate, access, jenis_dokumen, tipe, createdAt, updatedAt)
             VALUES (?, 'Belum Upload', ?, 'unlock', ?, ?, NOW(), NOW())
@@ -1773,7 +1070,6 @@ module.exports = {
             ]
           })
 
-          // Refresh cek
           cek = await sequelize.query(activityQuery, {
             replacements: [kode, userType, tipe, timeUser, timeUserTomo],
             type: QueryTypes.SELECT
@@ -1785,163 +1081,69 @@ module.exports = {
 
       // Handle level 1, 2, 3 (Admin, Supervisor, PIC)
       if (level >= 1 && level <= 3) {
-        // Get PICs based on level
+        console.time('⏱️ Total')
+
         let picQuery = ''
-        let picCountQuery = ''
         let picReplacements = []
 
+        // Query untuk mendapatkan SEMUA depo
         if (level === 3) {
           picQuery = `
             SELECT 
-              p.id,
-              p.pic,
-              p.spv,
-              p.divisi,
-              p.kode_depo,
-              p.nama_depo,
-              p.status,
-              p.createdAt as p_createdAt,
-              p.updatedAt as p_updatedAt,
-              d.id as depo_id,
-              d.kode_depo as depo_kode_depo,
-              d.nama_depo as depo_nama_depo,
-              d.home_town,
-              d.channel,
-              d.distribution,
-              d.status_depo,
-              d.profit_center,
-              d.kode_plant,
-              d.kode_sap_1,
-              d.kode_sap_2,
-              d.nama_grom,
-              d.nama_bm,
-              d.nama_ass,
-              d.nama_pic_1,
-              d.nama_pic_2,
-              d.nama_pic_3,
-              d.nama_pic_4,
-              d.createdAt as depo_createdAt,
-              d.updatedAt as depo_updatedAt
-            FROM pics p
-            INNER JOIN depos d ON p.kode_depo = d.kode_plant
-            WHERE p.pic = ?
-              AND (d.kode_plant LIKE ? OR d.nama_depo LIKE ? OR d.home_town LIKE ?)
-            LIMIT ? OFFSET ?
-          `
-          picCountQuery = `
-            SELECT COUNT(*) as total
+              p.id, p.pic, p.spv, p.divisi, p.kode_depo, p.nama_depo, p.status,
+              p.createdAt as p_createdAt, p.updatedAt as p_updatedAt,
+              d.id as depo_id, d.kode_depo as depo_kode_depo, d.nama_depo as depo_nama_depo,
+              d.home_town, d.channel, d.distribution, d.status_depo, d.profit_center,
+              d.kode_plant, d.kode_sap_1, d.kode_sap_2, d.nama_grom, d.nama_bm, d.nama_ass,
+              d.nama_pic_1, d.nama_pic_2, d.nama_pic_3, d.nama_pic_4,
+              d.createdAt as depo_createdAt, d.updatedAt as depo_updatedAt
             FROM pics p
             INNER JOIN depos d ON p.kode_depo = d.kode_plant
             WHERE p.pic = ?
               AND (d.kode_plant LIKE ? OR d.nama_depo LIKE ? OR d.home_town LIKE ?)
           `
-          picReplacements = [name, `%${find}%`, `%${find}%`, `%${find}%`, limit, offset]
+          picReplacements = [name, `%${find}%`, `%${find}%`, `%${find}%`]
         } else if (level === 2) {
           picQuery = `
             SELECT 
-              p.id,
-              p.pic,
-              p.spv,
-              p.divisi,
-              p.kode_depo,
-              p.nama_depo,
-              p.status,
-              p.createdAt as p_createdAt,
-              p.updatedAt as p_updatedAt,
-              d.id as depo_id,
-              d.kode_depo as depo_kode_depo,
-              d.nama_depo as depo_nama_depo,
-              d.home_town,
-              d.channel,
-              d.distribution,
-              d.status_depo,
-              d.profit_center,
-              d.kode_plant,
-              d.kode_sap_1,
-              d.kode_sap_2,
-              d.nama_grom,
-              d.nama_bm,
-              d.nama_ass,
-              d.nama_pic_1,
-              d.nama_pic_2,
-              d.nama_pic_3,
-              d.nama_pic_4,
-              d.createdAt as depo_createdAt,
-              d.updatedAt as depo_updatedAt
-            FROM pics p
-            INNER JOIN depos d ON p.kode_depo = d.kode_plant
-            WHERE p.spv = ?
-              AND (d.kode_plant LIKE ? OR d.nama_depo LIKE ? OR d.home_town LIKE ?)
-            LIMIT ? OFFSET ?
-          `
-          picCountQuery = `
-            SELECT COUNT(*) as total
+              p.id, p.pic, p.spv, p.divisi, p.kode_depo, p.nama_depo, p.status,
+              p.createdAt as p_createdAt, p.updatedAt as p_updatedAt,
+              d.id as depo_id, d.kode_depo as depo_kode_depo, d.nama_depo as depo_nama_depo,
+              d.home_town, d.channel, d.distribution, d.status_depo, d.profit_center,
+              d.kode_plant, d.kode_sap_1, d.kode_sap_2, d.nama_grom, d.nama_bm, d.nama_ass,
+              d.nama_pic_1, d.nama_pic_2, d.nama_pic_3, d.nama_pic_4,
+              d.createdAt as depo_createdAt, d.updatedAt as depo_updatedAt
             FROM pics p
             INNER JOIN depos d ON p.kode_depo = d.kode_plant
             WHERE p.spv = ?
               AND (d.kode_plant LIKE ? OR d.nama_depo LIKE ? OR d.home_town LIKE ?)
           `
-          picReplacements = [name, `%${find}%`, `%${find}%`, `%${find}%`, limit, offset]
-        } else { // level 1
+          picReplacements = [name, `%${find}%`, `%${find}%`, `%${find}%`]
+        } else {
           picQuery = `
             SELECT 
-              p.id,
-              p.pic,
-              p.spv,
-              p.divisi,
-              p.kode_depo,
-              p.nama_depo,
-              p.status,
-              p.createdAt as p_createdAt,
-              p.updatedAt as p_updatedAt,
-              d.id as depo_id,
-              d.kode_depo as depo_kode_depo,
-              d.nama_depo as depo_nama_depo,
-              d.home_town,
-              d.channel,
-              d.distribution,
-              d.status_depo,
-              d.profit_center,
-              d.kode_plant,
-              d.kode_sap_1,
-              d.kode_sap_2,
-              d.nama_grom,
-              d.nama_bm,
-              d.nama_ass,
-              d.nama_pic_1,
-              d.nama_pic_2,
-              d.nama_pic_3,
-              d.nama_pic_4,
-              d.createdAt as depo_createdAt,
-              d.updatedAt as depo_updatedAt
-            FROM pics p
-            INNER JOIN depos d ON p.kode_depo = d.kode_plant
-            WHERE p.spv LIKE '%%'
-              AND (d.kode_plant LIKE ? OR d.nama_depo LIKE ? OR d.home_town LIKE ?)
-            LIMIT ? OFFSET ?
-          `
-          picCountQuery = `
-            SELECT COUNT(*) as total
+              p.id, p.pic, p.spv, p.divisi, p.kode_depo, p.nama_depo, p.status,
+              p.createdAt as p_createdAt, p.updatedAt as p_updatedAt,
+              d.id as depo_id, d.kode_depo as depo_kode_depo, d.nama_depo as depo_nama_depo,
+              d.home_town, d.channel, d.distribution, d.status_depo, d.profit_center,
+              d.kode_plant, d.kode_sap_1, d.kode_sap_2, d.nama_grom, d.nama_bm, d.nama_ass,
+              d.nama_pic_1, d.nama_pic_2, d.nama_pic_3, d.nama_pic_4,
+              d.createdAt as depo_createdAt, d.updatedAt as depo_updatedAt
             FROM pics p
             INNER JOIN depos d ON p.kode_depo = d.kode_plant
             WHERE p.spv LIKE '%%'
               AND (d.kode_plant LIKE ? OR d.nama_depo LIKE ? OR d.home_town LIKE ?)
           `
-          picReplacements = [`%${find}%`, `%${find}%`, `%${find}%`, limit, offset]
+          picReplacements = [`%${find}%`, `%${find}%`, `%${find}%`]
         }
 
+        console.time('1️⃣ Pic query')
         const picResults = await sequelize.query(picQuery, {
           replacements: picReplacements,
           type: QueryTypes.SELECT
         })
+        console.timeEnd('1️⃣ Pic query')
 
-        // Count total PICs
-        const [countPicResult] = await sequelize.query(picCountQuery, {
-          replacements: picReplacements.slice(0, -2),
-          type: QueryTypes.SELECT
-        })
-
-        // Transform pic results to match ORM structure
         const transformedPics = picResults.map(row => ({
           id: row.id,
           pic: row.pic,
@@ -1976,31 +1178,15 @@ module.exports = {
           }
         }))
 
-        const results = {
-          rows: transformedPics,
-          count: countPicResult.total
-        }
-
-        const pageInfo = pagination('/dashboard/get', req.query, page, limit, results.count)
-
         if (!transformedPics.length) {
           return response(res, 'depo no found', {}, 404, false)
         }
 
-        // Get depos array - level 3 uses depo object, level 1,2 uses pic object
-        // IMPORTANT: kode lama pakai depos[i].kode_plant atau depos[i].kode_depo langsung
         const depos = level === 3 ? transformedPics.map(x => x.depo) : transformedPics
-
-        // Create array of kode_depo that matches the depos array length
         const kodeDepos = level === 3
           ? depos.map(x => x.kode_plant)
           : depos.map(x => x.kode_depo)
 
-        // Deduplicate for batch queries only
-        const uniqueKodeDeposSet = new Set(kodeDepos)
-        let uniqueKodeDepos = Array.from(uniqueKodeDeposSet)
-
-        // Calculate time range
         let now = time ? moment(time).startOf('day').toDate() : moment().startOf('day').toDate()
         let tomo = time ? moment(time).add(1, 'days').startOf('day').toDate() : moment().add(1, 'days').startOf('day').toDate()
 
@@ -2009,134 +1195,148 @@ module.exports = {
           tomo = time ? moment(time).endOf('month').toDate() : moment().endOf('month').toDate()
         }
 
-        // Get unique kode depos for batch queries
-        uniqueKodeDepos = [...new Set(kodeDepos)]
+        const uniqueKodeDepos = [...new Set(kodeDepos)]
+        console.log(`📊 Total unique depos: ${uniqueKodeDepos.length}`)
 
-        // BATCH QUERY: Get all depos data at once
-        const depoDataQuery = `
-          SELECT 
-            d.id,
-            d.kode_depo,
-            d.nama_depo,
-            d.home_town,
-            d.channel,
-            d.distribution,
-            d.status_depo,
-            d.profit_center,
-            d.kode_plant,
-            d.kode_sap_1,
-            d.kode_sap_2,
-            d.nama_grom,
-            d.nama_bm,
-            d.nama_ass,
-            d.nama_pic_1,
-            d.nama_pic_2,
-            d.nama_pic_3,
-            d.nama_pic_4,
-            d.createdAt,
-            d.updatedAt
-          FROM depos d
-          WHERE d.kode_plant IN (?)
-        `
+        console.time('2️⃣ Main queries')
 
-        // BATCH QUERY: Get all activities at once (for SA and KASIR)
-        const activitiesQuery = `
-          SELECT 
-            a.id,
-            a.kode_plant,
-            a.progress,
-            a.documentDate,
-            a.status,
-            a.access,
-            a.jenis_dokumen,
-            a.tipe,
-            a.createdAt,
-            a.updatedAt
+        // QUERY 1: Ambil activity IDs yang punya paths (uploaded)
+        const uploadedActivityQuery = `
+          SELECT DISTINCT a.id, a.kode_plant, a.tipe
           FROM activities a
+          INNER JOIN Paths p ON a.id = p.activityId
           WHERE a.kode_plant IN (?)
             AND a.tipe IN ('sa', 'kasir')
             AND a.jenis_dokumen LIKE ?
             AND a.createdAt > ?
             AND a.createdAt < ?
-          ORDER BY a.kode_plant, a.tipe, a.createdAt DESC
         `
 
-        // BATCH QUERY: Get all documents at once
-        const documentsQuery = `
+        // QUERY 2: Ambil semua depos data (sudah ada dari pic query, tapi kita perlu struktur clean)
+        const depoDataQuery = `
           SELECT 
-            doc.id,
-            doc.nama_dokumen,
-            doc.jenis_dokumen,
-            doc.postDokumen,
-            doc.divisi,
-            doc.status_depo,
-            doc.uploadedBy,
-            doc.status,
-            doc.access,
-            doc.createdAt,
-            doc.updatedAt
-          FROM documents doc
-          WHERE doc.nama_dokumen LIKE ?
-            AND doc.jenis_dokumen LIKE ?
-            AND doc.uploadedBy IN ('sa', 'kasir')
-            AND doc.status != 'inactive'
+            d.id, d.kode_depo, d.nama_depo, d.home_town, d.channel, d.distribution,
+            d.status_depo, d.profit_center, d.kode_plant, d.kode_sap_1, d.kode_sap_2,
+            d.nama_grom, d.nama_bm, d.nama_ass, d.nama_pic_1, d.nama_pic_2,
+            d.nama_pic_3, d.nama_pic_4, d.createdAt, d.updatedAt
+          FROM depos d
+          WHERE d.kode_plant IN (?)
         `
 
-        // Execute batch queries in parallel
-        const [allDepos, allActivities, allDocuments] = await Promise.all([
-          sequelize.query(depoDataQuery, {
-            replacements: [uniqueKodeDepos],
-            type: QueryTypes.SELECT
-          }),
-          sequelize.query(activitiesQuery, {
+        const [uploadedActivities, allDepos] = await Promise.all([
+          sequelize.query(uploadedActivityQuery, {
             replacements: [uniqueKodeDepos, `%${tipe}%`, now, tomo],
             type: QueryTypes.SELECT
           }),
-          sequelize.query(documentsQuery, {
-            replacements: [`%${search}%`, `%${tipe}%`],
+          sequelize.query(depoDataQuery, {
+            replacements: [uniqueKodeDepos],
             type: QueryTypes.SELECT
           })
         ])
 
-        // Get all activity IDs for batch fetching paths
-        const activityIds = allActivities.map(a => a.id)
-        let allPaths = []
+        console.timeEnd('2️⃣ Main queries')
+        console.log(`✅ Uploaded activities found: ${uploadedActivities.length}`)
 
-        if (activityIds.length > 0) {
-          const pathsQuery = `
+        console.time('3️⃣ Build uploaded set')
+        // Build Set untuk lookup cepat uploaded depos
+        const uploadedDepoKeys = new Set()
+        uploadedActivities.forEach(act => {
+          uploadedDepoKeys.add(`${act.kode_plant}_${act.tipe}`)
+        })
+        console.timeEnd('3️⃣ Build uploaded set')
+
+        console.time('4️⃣ Conditional queries')
+        // Conditional queries berdasarkan statusUpload
+        let detailedActivities = []
+        let allPaths = []
+        let allDocuments = []
+
+        if (statusUpload === 'uploaded' || statusUpload === 'all') {
+          // Ambil detail activities dan paths hanya untuk yang uploaded
+          const activityIds = uploadedActivities.map(a => a.id)
+
+          if (activityIds.length > 0) {
+            const detailActivityQuery = `
+              SELECT 
+                a.id, a.kode_plant, a.progress, a.documentDate, a.status,
+                a.access, a.jenis_dokumen, a.tipe, a.createdAt, a.updatedAt
+              FROM activities a
+              WHERE a.id IN (?)
+            `
+
+            const pathsQuery = `
+              SELECT 
+                p.id, p.dokumen, p.activityId, p.kode_depo, p.alasan,
+                p.status_dokumen, p.path, p.createdAt, p.updatedAt
+              FROM Paths p
+              WHERE p.activityId IN (?)
+              LIMIT 5000
+            `
+
+            const documentsQuery = `
+              SELECT 
+                doc.id, doc.nama_dokumen, doc.jenis_dokumen, doc.postDokumen,
+                doc.divisi, doc.status_depo, doc.uploadedBy, doc.status,
+                doc.access, doc.createdAt, doc.updatedAt
+              FROM documents doc
+              WHERE doc.nama_dokumen LIKE ?
+                AND doc.jenis_dokumen LIKE ?
+                AND doc.uploadedBy IN ('sa', 'kasir')
+                AND doc.status != 'inactive'
+            `
+
+            const results = await Promise.all([
+              sequelize.query(detailActivityQuery, {
+                replacements: [activityIds],
+                type: QueryTypes.SELECT
+              }),
+              sequelize.query(pathsQuery, {
+                replacements: [activityIds],
+                type: QueryTypes.SELECT
+              }),
+              sequelize.query(documentsQuery, {
+                replacements: [`%${search}%`, `%${tipe}%`],
+                type: QueryTypes.SELECT
+              })
+            ])
+
+            detailedActivities = results[0]
+            allPaths = results[1]
+            allDocuments = results[2]
+          }
+        } else {
+          // Untuk not uploaded, hanya perlu documents
+          const documentsQuery = `
             SELECT 
-              p.id,
-              p.dokumen,
-              p.activityId,
-              p.kode_depo,
-              p.alasan,
-              p.status_dokumen,
-              p.path,
-              p.createdAt,
-              p.updatedAt
-            FROM Paths p
-            WHERE p.activityId IN (?)
+              doc.id, doc.nama_dokumen, doc.jenis_dokumen, doc.postDokumen,
+              doc.divisi, doc.status_depo, doc.uploadedBy, doc.status,
+              doc.access, doc.createdAt, doc.updatedAt
+            FROM documents doc
+            WHERE doc.nama_dokumen LIKE ?
+              AND doc.jenis_dokumen LIKE ?
+              AND doc.uploadedBy IN ('sa', 'kasir')
+              AND doc.status != 'inactive'
           `
 
-          allPaths = await sequelize.query(pathsQuery, {
-            replacements: [activityIds],
+          allDocuments = await sequelize.query(documentsQuery, {
+            replacements: [`%${search}%`, `%${tipe}%`],
             type: QueryTypes.SELECT
           })
         }
 
-        // Group data by keys for fast lookup
+        console.timeEnd('4️⃣ Conditional queries')
+
+        console.time('5️⃣ Build maps')
+        // Build lookup maps
         const depoMap = {}
         allDepos.forEach(d => {
           depoMap[d.kode_plant] = d
         })
 
         const activityMap = {}
-        allActivities.forEach(a => {
+        detailedActivities.forEach(a => {
           const key = `${a.kode_plant}_${a.tipe}`
-          if (!activityMap[key]) {
-            activityMap[key] = []
-          }
-          activityMap[key].push(a)
+          activityMap[key] = a
         })
 
         const pathMap = {}
@@ -2144,10 +1344,7 @@ module.exports = {
           if (!pathMap[p.activityId]) {
             pathMap[p.activityId] = []
           }
-          // Apply limit 50 per activity
-          if (pathMap[p.activityId].length < 50) {
-            pathMap[p.activityId].push(p)
-          }
+          pathMap[p.activityId].push(p)
         })
 
         const documentMap = {}
@@ -2158,101 +1355,162 @@ module.exports = {
           }
           documentMap[key].push(doc)
         })
+        console.timeEnd('5️⃣ Build maps')
 
-        // Build SA and KASIR arrays with OLD CODE LOGIC
-        // Logic from old code analysis:
-        // - Always push result.rows[0] to sa/kasir (could be undefined)
-        // - Only add to 'all' if result.rows[0] !== null && !== undefined
-        // - Since both loops run separately, if both have no activity, both push undefined
-        // BUT looking at the condition: only non-null/undefined go to 'all'
-        // So depo without activity should push to ONE array only (to avoid duplicate in counting)
-        const sa = []
-        const kasir = []
+        console.time('6️⃣ Build final data')
+        const finalData = []
 
-        // First pass: identify which depos have activities
-        const depoActivityStatus = {}
-        for (let i = 0; i < depos.length; i++) {
-          const kodeDepo = level === 3 ? depos[i].kode_plant : depos[i].kode_depo
-          const saActivities = activityMap[`${kodeDepo}_sa`] || []
-          const kasirActivities = activityMap[`${kodeDepo}_kasir`] || []
+        if (statusUpload === 'uploaded') {
+          // Hanya build data uploaded
+          uniqueKodeDepos.forEach(kodeDepo => {
+            const depoData = depoMap[kodeDepo]
+            if (!depoData) return
 
-          depoActivityStatus[i] = {
-            hasSA: saActivities.length > 0,
-            hasKasir: kasirActivities.length > 0
-          }
+            const saKey = `${kodeDepo}_sa`
+            const kasirKey = `${kodeDepo}_kasir`
+
+            if (uploadedDepoKeys.has(saKey)) {
+              const saActivity = activityMap[saKey]
+              const saPaths = saActivity ? pathMap[saActivity.id] || [] : []
+              const saDocuments = documentMap[`${depoData.status_depo}_sa`] || []
+
+              finalData.push({
+                ...depoData,
+                userType: 'sa',
+                active: saActivity ? [{ ...saActivity, doc: saPaths }] : [],
+                dokumen: saDocuments
+              })
+            }
+
+            if (uploadedDepoKeys.has(kasirKey)) {
+              const kasirActivity = activityMap[kasirKey]
+              const kasirPaths = kasirActivity ? pathMap[kasirActivity.id] || [] : []
+              const kasirDocuments = documentMap[`${depoData.status_depo}_kasir`] || []
+
+              finalData.push({
+                ...depoData,
+                userType: 'kasir',
+                active: kasirActivity ? [{ ...kasirActivity, doc: kasirPaths }] : [],
+                dokumen: kasirDocuments
+              })
+            }
+          })
+        } else if (statusUpload === 'not uploaded') {
+          // Hanya build data not uploaded
+          uniqueKodeDepos.forEach(kodeDepo => {
+            const depoData = depoMap[kodeDepo]
+            if (!depoData) return
+
+            const saKey = `${kodeDepo}_sa`
+            const kasirKey = `${kodeDepo}_kasir`
+
+            if (!uploadedDepoKeys.has(saKey)) {
+              const saDocuments = documentMap[`${depoData.status_depo}_sa`] || []
+              finalData.push({
+                ...depoData,
+                userType: 'sa',
+                active: [],
+                dokumen: saDocuments
+              })
+            }
+
+            if (!uploadedDepoKeys.has(kasirKey)) {
+              const kasirDocuments = documentMap[`${depoData.status_depo}_kasir`] || []
+              finalData.push({
+                ...depoData,
+                userType: 'kasir',
+                active: [],
+                dokumen: kasirDocuments
+              })
+            }
+          })
+        } else {
+          // 'all' - build uploaded + not uploaded
+          uniqueKodeDepos.forEach(kodeDepo => {
+            const depoData = depoMap[kodeDepo]
+            if (!depoData) return
+
+            const saKey = `${kodeDepo}_sa`
+            const kasirKey = `${kodeDepo}_kasir`
+
+            // SA
+            const saUploaded = uploadedDepoKeys.has(saKey)
+            if (saUploaded) {
+              const saActivity = activityMap[saKey]
+              const saPaths = saActivity ? pathMap[saActivity.id] || [] : []
+              const saDocuments = documentMap[`${depoData.status_depo}_sa`] || []
+
+              finalData.push({
+                ...depoData,
+                userType: 'sa',
+                active: saActivity ? [{ ...saActivity, doc: saPaths }] : [],
+                dokumen: saDocuments
+              })
+            } else {
+              const saDocuments = documentMap[`${depoData.status_depo}_sa`] || []
+              finalData.push({
+                ...depoData,
+                userType: 'sa',
+                active: [],
+                dokumen: saDocuments
+              })
+            }
+
+            // Kasir
+            const kasirUploaded = uploadedDepoKeys.has(kasirKey)
+            if (kasirUploaded) {
+              const kasirActivity = activityMap[kasirKey]
+              const kasirPaths = kasirActivity ? pathMap[kasirActivity.id] || [] : []
+              const kasirDocuments = documentMap[`${depoData.status_depo}_kasir`] || []
+
+              finalData.push({
+                ...depoData,
+                userType: 'kasir',
+                active: kasirActivity ? [{ ...kasirActivity, doc: kasirPaths }] : [],
+                dokumen: kasirDocuments
+              })
+            } else {
+              const kasirDocuments = documentMap[`${depoData.status_depo}_kasir`] || []
+              finalData.push({
+                ...depoData,
+                userType: 'kasir',
+                active: [],
+                dokumen: kasirDocuments
+              })
+            }
+          })
         }
 
-        // Build SA array
-        for (let i = 0; i < depos.length; i++) {
-          const kodeDepo = level === 3 ? depos[i].kode_plant : depos[i].kode_depo
-          const depoData = depoMap[kodeDepo]
-          const status = depoActivityStatus[i]
+        const totalCount = finalData.length
+        console.log(`📦 Final data count: ${totalCount}`)
+        console.timeEnd('6️⃣ Build final data')
 
-          const saActivities = activityMap[`${kodeDepo}_sa`] || []
-          const saActivity = saActivities[0]
+        console.time('7️⃣ Pagination')
+        // Apply pagination
+        const offset = (page - 1) * limit
+        const paginatedData = finalData.slice(offset, offset + limit)
 
-          if (depoData && saActivity) {
-            // SA has activity - push full data
-            const saPaths = pathMap[saActivity.id] || []
-            const saDocuments = documentMap[`${depoData.status_depo}_sa`] || []
+        // Separate SA dan Kasir
+        const sa = paginatedData.filter(d => d.userType === 'sa')
+        const kasir = paginatedData.filter(d => d.userType === 'kasir')
+        console.timeEnd('7️⃣ Pagination')
 
-            sa.push({
-              ...depoData,
-              active: [{
-                ...saActivity,
-                doc: saPaths
-              }],
-              dokumen: saDocuments
-            })
-          } else if (depoData && !status.hasSA && !status.hasKasir) {
-            // Neither SA nor Kasir has activity - push depo to SA only (not kasir)
-            const saDocuments = documentMap[`${depoData.status_depo}_sa`] || []
-            sa.push({
-              ...depoData,
-              active: [],
-              dokumen: saDocuments
-            })
-          } else {
-            // No SA activity but Kasir has activity - push undefined to SA
-            sa.push(undefined)
-          }
+        const updatedPageInfo = pagination('/dashboard/get', req.query, page, limit, totalCount)
+
+        const results = {
+          rows: transformedPics,
+          count: transformedPics.length
         }
 
-        // Build KASIR array
-        for (let i = 0; i < depos.length; i++) {
-          const kodeDepo = level === 3 ? depos[i].kode_plant : depos[i].kode_depo
-          const depoData = depoMap[kodeDepo]
-          const status = depoActivityStatus[i]
+        console.timeEnd('⏱️ Total')
 
-          const kasirActivities = activityMap[`${kodeDepo}_kasir`] || []
-          const kasirActivity = kasirActivities[0]
-
-          if (depoData && kasirActivity) {
-            // KASIR has activity - push full data
-            const kasirPaths = pathMap[kasirActivity.id] || []
-            const kasirDocuments = documentMap[`${depoData.status_depo}_kasir`] || []
-
-            kasir.push({
-              ...depoData,
-              active: [{
-                ...kasirActivity,
-                doc: kasirPaths
-              }],
-              dokumen: kasirDocuments
-            })
-          } else if (depoData && !status.hasSA && !status.hasKasir) {
-            // Neither has activity - already pushed to SA, push undefined here
-            kasir.push(undefined)
-          } else {
-            // No Kasir activity - push undefined
-            kasir.push(undefined)
-          }
-        }
-
-        // Build all array (filter out nulls/undefined like ORM code)
-        const all = [...sa, ...kasir].filter(x => x !== null && x !== undefined)
-
-        return response(res, 'list dokumen', { results, sa, kasir, all, pageInfo })
+        return response(res, 'list dokumen', {
+          results,
+          sa,
+          kasir,
+          all: paginatedData,
+          pageInfo: updatedPageInfo
+        })
       }
     } catch (error) {
       console.error('Dashboard error:', error)
