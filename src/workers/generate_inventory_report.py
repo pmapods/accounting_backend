@@ -1,10 +1,7 @@
-# generate_inventory_report.py - COMPLETE FIXED VERSION WITH EDS DEBUGGING
-# Modified: Use report_date from request body instead of MB51 posting date
-# Added "Intra Gudang Masuk" to all storage types (GS00, BS00, AI00, TR00)
-# Group MB51 by (Material, Plant, Storage, Movement Type, Movement Type Text)
-# Then map mv_text -> mv_grouping -> determine target column
-# FILTER: Only process GS00, BS00, AI00, TR00, EMPTY_STORAGE
-# Added comprehensive EDS debugging
+# generate_inventory_report.py - WITH BASO SUPPORT
+# Modified: Added BASO file processing with 4 sheets (GT GS, GT BS, MT GS, MT BS)
+# BASO mapping: (Plant, Kode Barang) -> FISIK (PCS)
+# Output: 3 new columns CC (GS BASO), CD (BS BASO), CE (Grand Total)
 
 import sys
 import json
@@ -65,10 +62,13 @@ def read_sheet(file_path, sheet_name):
 class SheetCache:
     """Cache for sheet lookups - build once, query many times"""
     
-    def __init__(self, sheets_dict):
+    def __init__(self, sheets_dict, baso_path=None):
         self.sheets = sheets_dict
         self.caches = {}
+        self.baso_path = baso_path
         self._build_caches()
+        if baso_path:
+            self._build_baso_cache()
     
     def _build_caches(self):
         """Pre-build all lookup caches"""
@@ -159,28 +159,17 @@ class SheetCache:
                     self.caches['mb5b_bs'] = grouped_bs.to_dict()
                     log(f"  MB5B BS cache: {len(self.caches['mb5b_bs'])} entries")
         
-        # Cache EDS with extensive debugging
+        # Cache EDS
         if '14. SALDO AKHIR EDS' in self.sheets:
             df = self.sheets['14. SALDO AKHIR EDS']
             log(f"  === DEBUGGING EDS SHEET ===")
             log(f"  Sheet shape: {df.shape} (rows x cols)")
-            log(f"  First 5 rows preview:")
-            for i in range(min(5, len(df))):
-                log(f"    Row {i}: {list(df.iloc[i].values)[:10]}")  # Show first 10 columns
             
             cols = list(df.columns)
-            log(f"  Available columns ({len(cols)}): {cols}")
-            
             mat_col = find_col(cols, ["Material"])
             plant_col = find_col(cols, ["Plant"])
             sloc_col = find_col(cols, ["Storage Location", "Storage Loc"])
             amt_col = find_col(cols, ["Closing Stock (pcs)", "Closing Stock", "QTY"])
-            
-            log(f"  Column mapping:")
-            log(f"    Material column: {mat_col}")
-            log(f"    Plant column: {plant_col}")
-            log(f"    Storage Location column: {sloc_col}")
-            log(f"    Quantity column: {amt_col}")
             
             if mat_col and amt_col:
                 df_clean = df.copy()
@@ -189,31 +178,134 @@ class SheetCache:
                 df_clean['sloc'] = df_clean[sloc_col].astype(str).str.strip() if sloc_col else ''
                 df_clean['amount'] = pd.to_numeric(df_clean[amt_col], errors='coerce').fillna(0)
                 
-                # Show data before grouping
-                non_zero = df_clean[df_clean['amount'] != 0]
-                log(f"  Non-zero amount rows: {len(non_zero)}/{len(df_clean)}")
-                if len(non_zero) > 0:
-                    log(f"  Sample non-zero data (first 5):")
-                    for i, row in non_zero.head(5).iterrows():
-                        log(f"    Material={row['material']}, Plant={row['plant']}, Sloc={row['sloc']}, Amount={row['amount']}")
-                
-                # Check for unique storage locations
-                unique_slocs = df_clean['sloc'].unique()
-                log(f"  Unique storage locations ({len(unique_slocs)}): {list(unique_slocs)[:20]}")
-                
                 grouped = df_clean.groupby(['material', 'plant', 'sloc'], dropna=False)['amount'].sum()
                 self.caches['eds'] = grouped.to_dict()
                 log(f"  EDS cache: {len(self.caches['eds'])} entries")
+
+    def _build_baso_cache(self):
+        """Build BASO cache from 4 sheets"""
+        log("=== Building BASO cache ===")
+        
+        try:
+            import openpyxl
+            wb = openpyxl.load_workbook(self.baso_path, read_only=True, data_only=True)
+            available_sheets = wb.sheetnames
+            log(f"  Available BASO sheets: {available_sheets}")
+            
+            # Initialize caches
+            self.caches['baso_gs'] = {}
+            self.caches['baso_bs'] = {}
+            
+            # Process each sheet
+            for sheet_name in available_sheets:
+                # Detect type by sheet name ending
+                sheet_lower = sheet_name.lower()
+                if sheet_lower.endswith('gs'):
+                    target_type = 'GS'
+                elif sheet_lower.endswith('bs'):
+                    target_type = 'BS'
+                else:
+                    log(f"  Skipping sheet '{sheet_name}' (not ending with GS or BS)")
+                    continue
                 
-                # Show sample of cached data
-                if len(self.caches['eds']) > 0:
-                    log(f"  Sample cached entries (first 10):")
-                    for i, (key, val) in enumerate(list(self.caches['eds'].items())[:10]):
-                        log(f"    {key} = {val}")
-            else:
-                log(f"  ERROR: Could not find required columns!")
-                log(f"    Missing Material: {mat_col is None}")
-                log(f"    Missing Quantity: {amt_col is None}")
+                log(f"  Processing BASO sheet: '{sheet_name}' -> {target_type}")
+                
+                # Read sheet
+                df = pd.read_excel(self.baso_path, sheet_name=sheet_name, dtype=str)
+                df.columns = [str(c).strip() if not pd.isna(c) else f"Unnamed_{i}" 
+                             for i, c in enumerate(df.columns)]
+                
+                log(f"    Sheet shape: {df.shape}")
+                log(f"    First 5 rows preview:")
+                for i in range(min(5, len(df))):
+                    log(f"      Row {i}: {list(df.iloc[i].values)[:8]}")
+                
+                # Find header row (row 3 = index 2)
+                header_row_idx = None
+                for i in range(min(10, len(df))):
+                    row_values = df.iloc[i].astype(str).str.lower().tolist()
+                    row_str = ' '.join(row_values)
+                    if 'kode barang' in row_str or 'fisik' in row_str:
+                        header_row_idx = i
+                        log(f"    Found header at row {i}")
+                        break
+                
+                if header_row_idx is None:
+                    log(f"    ERROR: Could not find header row")
+                    continue
+                
+                # Set header and remove rows before it
+                df.columns = df.iloc[header_row_idx]
+                df = df.iloc[header_row_idx + 1:].reset_index(drop=True)
+                
+                # Find columns
+                cols = list(df.columns)
+                log(f"    Columns after header: {cols}")
+                
+                plant_col = find_col(cols, ["PLANT", "Plant"])
+                material_col = find_col(cols, ["KODE BARANG", "Kode Barang", "Material"])
+                fisik_col = find_col(cols, ["FISIK (PCS)", "Fisik (pcs)", "FISIK"])
+                
+                log(f"    Column mapping:")
+                log(f"      Plant: {plant_col}")
+                log(f"      Material: {material_col}")
+                log(f"      Fisik: {fisik_col}")
+                
+                if not plant_col or not material_col or not fisik_col:
+                    log(f"    ERROR: Missing required columns")
+                    continue
+                
+                # Process data
+                df_clean = df.copy()
+                df_clean['plant'] = df_clean[plant_col].astype(str).str.strip().str.upper()
+                df_clean['material'] = df_clean[material_col].astype(str).str.strip()
+                df_clean['fisik'] = pd.to_numeric(df_clean[fisik_col], errors='coerce').fillna(0)
+                
+                # Remove empty rows
+                df_clean = df_clean[
+                    (df_clean['plant'] != '') & 
+                    (df_clean['plant'] != 'NAN') &
+                    (df_clean['material'] != '') & 
+                    (df_clean['material'] != 'NAN')
+                ]
+                
+                log(f"    Valid rows: {len(df_clean)}")
+                
+                # Group by (plant, material) and sum
+                grouped = df_clean.groupby(['plant', 'material'], dropna=False)['fisik'].sum()
+                
+                # Store in appropriate cache
+                cache_key = 'baso_gs' if target_type == 'GS' else 'baso_bs'
+                for (plant, material), fisik_value in grouped.items():
+                    key = (material, plant)
+                    if key in self.caches[cache_key]:
+                        self.caches[cache_key][key] += fisik_value
+                    else:
+                        self.caches[cache_key][key] = fisik_value
+                
+                log(f"    Added {len(grouped)} entries to {cache_key}")
+            
+            wb.close()
+            
+            log(f"  BASO GS cache: {len(self.caches.get('baso_gs', {}))} total entries")
+            log(f"  BASO BS cache: {len(self.caches.get('baso_bs', {}))} total entries")
+            
+            # Show sample data
+            if len(self.caches.get('baso_gs', {})) > 0:
+                log(f"  Sample BASO GS entries (first 5):")
+                for i, (key, val) in enumerate(list(self.caches['baso_gs'].items())[:5]):
+                    log(f"    {key} = {val}")
+            
+            if len(self.caches.get('baso_bs', {})) > 0:
+                log(f"  Sample BASO BS entries (first 5):")
+                for i, (key, val) in enumerate(list(self.caches['baso_bs'].items())[:5]):
+                    log(f"    {key} = {val}")
+                    
+        except Exception as e:
+            log(f"  ERROR building BASO cache: {str(e)}")
+            log(f"  Traceback: {traceback.format_exc()}")
+            self.caches['baso_gs'] = {}
+            self.caches['baso_bs'] = {}
 
     def get_saldo_awal(self, material, plant, sloc_type):
         if 'saldo_awal' not in self.caches:
@@ -236,6 +328,13 @@ class SheetCache:
         if 'eds' not in self.caches:
             return 0.0
         return self.caches['eds'].get((material, plant, sloc_type), 0.0)
+    
+    def get_baso(self, material, plant, sloc_type):
+        """Get BASO value for material+plant"""
+        cache_key = 'baso_gs' if sloc_type == "GS" else 'baso_bs'
+        if cache_key not in self.caches:
+            return 0.0
+        return self.caches[cache_key].get((material, plant), 0.0)
 
 def main():
     try:
@@ -243,16 +342,23 @@ def main():
         files = payload.get("files", {})
         master_inventory = payload.get("master_inventory", [])
         master_movement = payload.get("master_movement", [])
-        report_date = payload.get("report_date")  # Ambil tanggal dari request body
+        report_date = payload.get("report_date")
 
         mb51_path = files.get("mb51")
         main_path = files.get("main")
+        baso_path = files.get("baso")  # TAMBAHAN: Path BASO (opsional)
 
         if not mb51_path or not main_path:
             raise ValueError("Payload must include files.mb51 and files.main paths")
         
         if not report_date:
             raise ValueError("Payload must include report_date")
+
+        # Log BASO status
+        if baso_path:
+            log(f"BASO file provided: {baso_path}")
+        else:
+            log("BASO file not provided - will use zeros for BASO columns")
 
         # Load master data
         log("Loading master data...")
@@ -274,7 +380,6 @@ def main():
         df_master_mov['mv_text'] = df_master_mov['mv_text'].astype(str).str.strip().str.lower()
         df_master_mov['mv_grouping'] = df_master_mov['mv_grouping'].astype(str).str.strip()
         
-        # Create mapping: mv_text -> mv_grouping (use first occurrence if duplicates)
         mv_text_to_grouping = {}
         for _, row in df_master_mov.iterrows():
             mv_text = row['mv_text']
@@ -333,8 +438,8 @@ def main():
             ("TR00", "Adjustment"): "BD",
             
             # 641/642 (empty storage) - 2 columns (BF, BG)
-            ("EMPTY_STORAGE", "Intra Gudang"): "BF",  # 641
-            ("EMPTY_STORAGE", "Intra Gudang"): "BG",  # 642
+            ("EMPTY_STORAGE", "Intra Gudang"): "BF",
+            ("EMPTY_STORAGE", "Intra Gudang"): "BG",
         }
         
         log(f"  Created {len(storage_grouping_to_column)} (storage, mv_grouping) -> column mappings")
@@ -382,7 +487,7 @@ def main():
         
         df_mb51 = df_mb51.rename(columns=rename_dict)
 
-        # Determine report period dari request body
+        # Determine report period
         log("Determining report period from request body...")
         report_month_dt = datetime.datetime.strptime(report_date, "%Y-%m-%d")
         
@@ -398,8 +503,6 @@ def main():
         # Convert data types
         log("Converting data types...")
         
-        # Tidak perlu convert posting_date lagi karena tidak digunakan untuk menentukan periode
-        # Posting date hanya untuk filter jika diperlukan
         try:
             date_numeric = pd.to_numeric(df_mb51["posting_date"], errors='coerce')
             df_mb51["posting_date"] = pd.to_datetime(
@@ -410,23 +513,20 @@ def main():
             )
             
             valid_dates = df_mb51["posting_date"].notna().sum()
-            log(f"  ✓ Converted {valid_dates}/{len(df_mb51)} dates successfully (for reference only)")
+            log(f"  ✓ Converted {valid_dates}/{len(df_mb51)} dates successfully")
                 
         except Exception as e:
             log(f"  ERROR converting dates: {str(e)}")
             df_mb51["posting_date"] = pd.NaT
         
-        # Convert amount - keep negative values
         df_mb51["amount"] = pd.to_numeric(df_mb51["amount"], errors="coerce")
         
         neg_count = (df_mb51["amount"] < 0).sum()
         pos_count = (df_mb51["amount"] > 0).sum()
-        zero_count = (df_mb51["amount"] == 0).sum()
-        nan_count = df_mb51["amount"].isna().sum()
         total_amount = df_mb51["amount"].sum()
         
         log(f"  === AMOUNT DISTRIBUTION (RAW MB51) ===")
-        log(f"  Positive: {pos_count}, Negative: {neg_count}, Zero: {zero_count}, NaN: {nan_count}")
+        log(f"  Positive: {pos_count}, Negative: {neg_count}")
         log(f"  Total sum: {total_amount:,.2f}")
         
         df_mb51["plant"] = df_mb51["plant"].astype(str).str.strip()
@@ -434,7 +534,7 @@ def main():
         df_mb51["material"] = df_mb51["material"].astype(str).str.strip()
         df_mb51["mv_text"] = df_mb51["mv_text"].astype(str).str.strip().str.lower()
         
-        # Handle storage with proper null detection
+        # Handle storage
         if 'sloc' in df_mb51.columns:
             df_mb51["is_empty_storage"] = (
                 (df_mb51["sloc"].isna()) |
@@ -449,9 +549,6 @@ def main():
         else:
             df_mb51["storage"] = "EMPTY_STORAGE"
             df_mb51["is_empty_storage"] = True
-        
-        empty_count = df_mb51["is_empty_storage"].sum()
-        log(f"  Rows with empty/null storage: {empty_count}/{len(df_mb51)} ({empty_count/len(df_mb51)*100:.1f}%)")
 
         # Map inventory
         log("Mapping inventory data...")
@@ -468,32 +565,6 @@ def main():
         required_sheets = ['SALDO AWAL', 'SALDO AWAL MB5B', '13. MB5B', 
                           '14. SALDO AKHIR EDS', 'Output Report INV ARUS BARANG']
         
-        # First, check what sheets are available
-        log("  Checking available sheets in main file...")
-        try:
-            import openpyxl
-            wb_check = openpyxl.load_workbook(main_path, read_only=True)
-            available_sheets = wb_check.sheetnames
-            log(f"  Available sheets ({len(available_sheets)}):")
-            for sheet_name in available_sheets:
-                log(f"    - '{sheet_name}'")
-            wb_check.close()
-            
-            # Check if required sheets exist (case-insensitive)
-            available_lower = {s.lower(): s for s in available_sheets}
-            log(f"  Checking required sheets:")
-            for req_sheet in required_sheets:
-                if req_sheet.lower() in available_lower:
-                    actual_name = available_lower[req_sheet.lower()]
-                    if actual_name != req_sheet:
-                        log(f"    ⚠️  '{req_sheet}' found as '{actual_name}' (case mismatch)")
-                    else:
-                        log(f"    ✓ '{req_sheet}' found")
-                else:
-                    log(f"    ✗ '{req_sheet}' NOT FOUND!")
-        except Exception as e:
-            log(f"  Warning: Could not check sheet names: {str(e)}")
-        
         sheets_dict = {}
         with ThreadPoolExecutor(max_workers=4) as executor:
             futures = [executor.submit(read_sheet, main_path, sheet) for sheet in required_sheets]
@@ -502,10 +573,9 @@ def main():
                 if df is not None:
                     sheets_dict[sheet_name] = df
                     log(f"  ✓ Loaded '{sheet_name}': {df.shape}")
-                else:
-                    log(f"  ✗ Failed to load '{sheet_name}'")
 
-        sheet_cache = SheetCache(sheets_dict)
+        # Initialize sheet cache WITH BASO
+        sheet_cache = SheetCache(sheets_dict, baso_path)
 
         # Get existing materials
         existing_materials = []
@@ -544,35 +614,25 @@ def main():
         df_mb51_filtered = df_mb51.copy()
         log(f"MB51 data before storage mapping: {len(df_mb51_filtered)} rows")
         
-        # Define known storages
         known_storages = ['GS00', 'BS00', 'AI00', 'TR00', 'EMPTY_STORAGE']
-        
-        # Find rows with unknown storage
         unknown_storage_mask = ~df_mb51_filtered['storage'].isin(known_storages)
         unknown_storage_count = unknown_storage_mask.sum()
         
         if unknown_storage_count > 0:
             log(f"Found {unknown_storage_count} rows with unknown storage")
-            
-            # Show unique unknown storages
             unknown_storages = df_mb51_filtered[unknown_storage_mask]['storage'].unique()
-            log(f"  Unknown storages: {list(unknown_storages)[:10]}")  # Show first 10
-            
-            # Map unknown storages to GS00
+            log(f"  Unknown storages: {list(unknown_storages)[:10]}")
             df_mb51_filtered.loc[unknown_storage_mask, 'storage'] = 'GS00'
             log(f"  → Mapped all unknown storages to GS00")
         
-        log(f"After storage mapping: {len(df_mb51_filtered)} rows (all included)")
+        log(f"After storage mapping: {len(df_mb51_filtered)} rows")
         
-        # Get unique plants from MB51
         df_mb51_filtered['plant_clean'] = df_mb51_filtered['plant'].astype(str).str.strip().str.upper()
         mb51_plants = set(df_mb51_filtered['plant_clean'].unique())
         log(f"Unique plants in MB51: {len(mb51_plants)}")
 
-        # Group MB51 by (Material, Plant, Storage, Movement Type, Movement Type Text)
+        # Group MB51
         log("=== Grouping MB51 by exact combination ===")
-        log("Grouping by: (Material, Plant, Storage, Movement Type, Movement Type Text)")
-        
         grouped_mb51 = df_mb51_filtered.groupby(
             ['material', 'plant_clean', 'storage', 'mv_type', 'mv_text'],
             dropna=False
@@ -580,40 +640,14 @@ def main():
         
         log(f"  Grouped MB51: {len(grouped_mb51)} unique combinations")
         
-        neg_after_group = (grouped_mb51['amount'] < 0).sum()
-        pos_after_group = (grouped_mb51['amount'] > 0).sum()
-        sum_after_group = grouped_mb51['amount'].sum()
-        
-        log(f"  After groupby - Positive: {pos_after_group}, Negative: {neg_after_group}")
-        log(f"  After groupby - Total sum: {sum_after_group:,.2f}")
-        
         # Map mv_text to mv_grouping
         log("Mapping mv_text to mv_grouping...")
         grouped_mb51['mv_grouping'] = grouped_mb51['mv_text'].map(mv_text_to_grouping)
         
-        # Count how many were mapped
         mapped_count = grouped_mb51['mv_grouping'].notna().sum()
         unmapped_count = grouped_mb51['mv_grouping'].isna().sum()
-        
         log(f"  Mapped: {mapped_count}/{len(grouped_mb51)}")
         log(f"  Unmapped: {unmapped_count}/{len(grouped_mb51)}")
-        
-        if unmapped_count > 0:
-            log(f"  === UNMAPPED mv_text DETAILS ===")
-            unmapped_df = grouped_mb51[grouped_mb51['mv_grouping'].isna()].copy()
-            
-            # Group by mv_text to see frequency
-            unmapped_summary = unmapped_df.groupby(['mv_text', 'mv_type', 'storage']).agg({
-                'amount': 'sum',
-                'material': 'count'
-            }).reset_index()
-            unmapped_summary.columns = ['mv_text', 'mv_type', 'storage', 'total_amount', 'count']
-            unmapped_summary = unmapped_summary.sort_values('total_amount', ascending=False)
-            
-            log(f"  Total unmapped combinations: {len(unmapped_summary)}")
-            log(f"  All unmapped movements (sorted by total_amount):")
-            for idx, row in unmapped_summary.iterrows():
-                log(f"    mv_text='{row['mv_text']}', mv_type={row['mv_type']}, storage={row['storage']}, amount={row['total_amount']:,.2f}, occurrences={row['count']}")
         
         # Determine target column
         log("Determining target columns...")
@@ -623,14 +657,12 @@ def main():
             mv_grouping = row['mv_grouping']
             mv_type = row['mv_type']
             
-            # Handle empty storage 641/642 separately
             if storage == 'EMPTY_STORAGE':
                 if mv_type == '641':
                     return 'BF'
                 elif mv_type == '642':
                     return 'BG'
             
-            # Use storage + mv_grouping mapping
             if pd.notna(mv_grouping):
                 key = (storage, mv_grouping)
                 return storage_grouping_to_column.get(key, None)
@@ -639,61 +671,24 @@ def main():
         
         grouped_mb51['target_column'] = grouped_mb51.apply(get_target_column, axis=1)
         
-        # Count how many have target columns
         has_target = grouped_mb51['target_column'].notna().sum()
         no_target = grouped_mb51['target_column'].isna().sum()
-        
         log(f"  Has target column: {has_target}/{len(grouped_mb51)}")
         log(f"  No target column: {no_target}/{len(grouped_mb51)}")
         
-        if no_target > 0:
-            log(f"  === NO TARGET COLUMN DETAILS ===")
-            no_target_df = grouped_mb51[grouped_mb51['target_column'].isna()].copy()
-            
-            # Group by combination to see frequency
-            no_target_summary = no_target_df.groupby(['storage', 'mv_grouping', 'mv_type', 'mv_text']).agg({
-                'amount': 'sum',
-                'material': 'count'
-            }).reset_index()
-            no_target_summary.columns = ['storage', 'mv_grouping', 'mv_type', 'mv_text', 'total_amount', 'count']
-            no_target_summary = no_target_summary.sort_values('total_amount', ascending=False)
-            
-            log(f"  Total combinations without target: {len(no_target_summary)}")
-            log(f"  All combinations without target column (sorted by amount):")
-            for idx, row in no_target_summary.iterrows():
-                log(f"    Storage={row['storage']}, mv_grouping={row['mv_grouping']}, mv_type={row['mv_type']}, mv_text='{row['mv_text']}', amount={row['total_amount']:,.2f}, count={row['count']}")
-        
-        # Create lookup: (material, plant, target_column) -> amount
+        # Create lookup
         log("Creating lookup dictionary...")
         mb51_lookup = {}
         
         for _, row in grouped_mb51.iterrows():
             if pd.notna(row['target_column']):
                 key = (row['material'], row['plant_clean'], row['target_column'])
-                
-                # If key exists, add to it (shouldn't happen, but just in case)
                 if key in mb51_lookup:
                     mb51_lookup[key] += row['amount']
                 else:
                     mb51_lookup[key] = row['amount']
         
         log(f"  Created lookup with {len(mb51_lookup)} keys")
-        
-        # Verify totals per column
-        log(f"  === Totals per target column ===")
-        column_totals = defaultdict(float)
-        for key, amount in mb51_lookup.items():
-            target_col = key[2]
-            column_totals[target_col] += amount
-        
-        for col in sorted(column_totals.keys()):
-            log(f"    {col}: {column_totals[col]:,.2f}")
-        
-        # Verify 641/642 specifically
-        bf_total = column_totals.get('BF', 0)
-        bg_total = column_totals.get('BG', 0)
-        log(f"  BF (641) total: {bf_total:,.2f}")
-        log(f"  BG (642) total: {bg_total:,.2f}")
 
         # Merge materials
         log(f"Merging materials from main file and MB51")
@@ -790,7 +785,7 @@ def main():
         ws.title = "Output Report INV ARUS BARANG"
         center = Alignment(horizontal="center", vertical="center")
 
-        # HEADER
+        # HEADER (tetap sama)
         ws["F1"], ws["F2"], ws["F3"], ws["F4"], ws["F5"], ws["F7"] = "Nama Area", "Plant", "Kode Dist", "Profit Center", "Periode", "Material"
         
         if not grouped_materials.empty:
@@ -800,7 +795,7 @@ def main():
         ws["G7"] = "Material Description"
         ws["A8"], ws["B8"], ws["C8"], ws["D8"], ws["E8"], ws["F8"] = "Nama Area", "Plant", "Kode Dist", "Profit Center", "Periode", "source data"
         
-        # Row 8 labels - UPDATED for new layout
+        # Row 8 labels
         ws["R8"], ws["S8"], ws["T8"], ws["U8"], ws["V8"], ws["W8"], ws["X8"], ws["Y8"] = "DTB", "BPPR", "LBP", "LBP", "DTB", "BPPR", "ALIH STATUS", "Pemusnahan"
         ws["AB8"], ws["AC8"], ws["AD8"], ws["AE8"], ws["AF8"], ws["AG8"], ws["AH8"], ws["AI8"] = "DTB", "BPPR", "LBP", "LBP", "DTB", "BPPR", "ALIH STATUS", "Pemusnahan"
         ws["AL8"], ws["AM8"], ws["AN8"], ws["AO8"], ws["AP8"], ws["AQ8"], ws["AR8"], ws["AS8"] = "DTB", "BPPR", "LBP", "LBP", "DTB", "BPPR", "ALIH STATUS", "Pemusnahan"
@@ -925,17 +920,26 @@ def main():
             ws.cell(row=6, column=col).alignment = center
             ws.cell(row=7, column=col, value="S.Ak").alignment = center
 
+        # TAMBAHAN: BASO HEADERS (kolom CC, CD, CE)
+        ws.merge_cells("CC5:CE5")
+        ws["CC5"] = "STOCK - BASO"
+        ws["CC5"].alignment = center
+
+        ws["CC6"], ws["CD6"], ws["CE6"] = "GS", "BS", "Grand Total"
+        for col in range(get_column_index("CC"), get_column_index("CE") + 1):
+            ws.cell(row=6, column=col).alignment = center
+            ws.cell(row=7, column=col, value="S.Ak").alignment = center
+
         # BODY CALCULATION
         log("Calculating body rows...")
         write_row = 9
         totals = defaultdict(float)
         
-        # Initialize EDS tracking
+        # Initialize tracking
         eds_hits = {'GS': 0, 'BS': 0, 'total_queries': 0}
+        baso_hits = {'GS': 0, 'BS': 0, 'total_queries': 0}
         
         num_materials = len(grouped_materials)
-        
-        # List of all target columns with new layout (TR00 now has 9 columns)
         all_target_columns = ["R", "S", "T", "U", "V", "W", "X", "Y", "Z",
                               "AB", "AC", "AD", "AE", "AF", "AG", "AH", "AI", "AJ",
                               "AL", "AM", "AN", "AO", "AP", "AQ", "AR", "AS", "AT",
@@ -990,24 +994,22 @@ def main():
             ws.cell(row=write_row, column=15, value=o9_formula)
             ws.cell(row=write_row, column=16, value=p9_formula)
 
-            # Write all columns from lookup
+            # Write MB51 columns
             if plant_exists_in_mb51:
                 for target_col in all_target_columns:
                     lookup_key = (material, plant, target_col)
                     amount = mb51_lookup.get(lookup_key, 0.0)
-                    
                     ws.cell(row=write_row, column=get_column_index(target_col), value=amount)
                     totals[target_col] += amount
             else:
-                # Plant not in MB51, write zeros
                 for target_col in all_target_columns:
                     ws.cell(row=write_row, column=get_column_index(target_col), value=0)
 
-            # BH formula (check) - V vs BF vs BG (updated column references)
+            # BH formula
             bh9_formula = f"=V{write_row}-BF{write_row}-BG{write_row}"
             ws.cell(row=write_row, column=get_column_index("BH"), value=bh9_formula)
 
-            # END STOCK formulas (updated column references)
+            # END STOCK
             bk9_formula = f"=H{write_row}+SUM(R{write_row}:Z{write_row})+SUM(AL{write_row}:BD{write_row})"
             bl9_formula = f"=I{write_row}+SUM(AB{write_row}:AJ{write_row})"
             bm9_formula = f"=BK{write_row}+BL{write_row}"
@@ -1016,7 +1018,7 @@ def main():
             ws.cell(row=write_row, column=get_column_index("BL"), value=bl9_formula)
             ws.cell(row=write_row, column=get_column_index("BM"), value=bm9_formula)
 
-            # SAP - MB5B (updated column references)
+            # SAP - MB5B
             bn9 = sheet_cache.get_mb5b(material, plant, "GS")
             bo9 = sheet_cache.get_mb5b(material, plant, "BS")
             bp9_formula = f"=SUM(BN{write_row}:BO{write_row})"
@@ -1025,7 +1027,7 @@ def main():
             ws.cell(row=write_row, column=get_column_index("BO"), value=bo9)
             ws.cell(row=write_row, column=get_column_index("BP"), value=bp9_formula)
 
-            # DIFF (updated column references)
+            # DIFF
             bq9_formula = f"=BK{write_row}-BN{write_row}"
             br9_formula = f"=BL{write_row}-BO{write_row}"
             bs9_formula = f"=BQ{write_row}+BR{write_row}"
@@ -1037,12 +1039,11 @@ def main():
             bt9_formula = f"=P{write_row}-BS{write_row}"
             ws.cell(row=write_row, column=get_column_index("BT"), value=bt9_formula)
 
-            # STOCK - EDS (updated column references) with tracking
+            # STOCK - EDS
             bv9 = sheet_cache.get_eds(material, plant, "GS")
             bw9 = sheet_cache.get_eds(material, plant, "BS")
             bx9_formula = f"=BV{write_row}+BW{write_row}"
             
-            # Track EDS hits for debugging
             eds_hits['total_queries'] += 2
             if bv9 != 0:
                 eds_hits['GS'] += 1
@@ -1061,29 +1062,39 @@ def main():
             ws.cell(row=write_row, column=get_column_index("BZ"), value=bz9_formula)
             ws.cell(row=write_row, column=get_column_index("CA"), value=ca9_formula)
 
+            # TAMBAHAN: STOCK - BASO (kolom CC, CD, CE)
+            cc9 = sheet_cache.get_baso(material, plant, "GS")
+            cd9 = sheet_cache.get_baso(material, plant, "BS")
+            ce9_formula = f"=CC{write_row}+CD{write_row}"
+            
+            baso_hits['total_queries'] += 2
+            if cc9 != 0:
+                baso_hits['GS'] += 1
+            if cd9 != 0:
+                baso_hits['BS'] += 1
+            
+            ws.cell(row=write_row, column=get_column_index("CC"), value=cc9)
+            ws.cell(row=write_row, column=get_column_index("CD"), value=cd9)
+            ws.cell(row=write_row, column=get_column_index("CE"), value=ce9_formula)
+
             write_row += 1
 
         log(f"Total rows written: {write_row - 9}")
         
-        # Log EDS cache usage summary
-        log(f"  === EDS Cache Usage Summary ===")
+        # Log EDS usage
+        log(f"  === EDS Cache Usage ===")
         log(f"  Total queries: {eds_hits['total_queries']}")
-        log(f"  Non-zero GS values: {eds_hits['GS']} ({eds_hits['GS']/eds_hits['total_queries']*100:.1f}%)")
-        log(f"  Non-zero BS values: {eds_hits['BS']} ({eds_hits['BS']/eds_hits['total_queries']*100:.1f}%)")
+        log(f"  GS hits: {eds_hits['GS']}, BS hits: {eds_hits['BS']}")
         
-        if 'eds' in sheet_cache.caches:
-            total_eds_entries = len(sheet_cache.caches['eds'])
-            log(f"  Total EDS cache entries: {total_eds_entries}")
-            if total_eds_entries > 0:
-                log(f"  Hit rate: {(eds_hits['GS'] + eds_hits['BS']) / total_eds_entries * 100:.1f}%")
-        else:
-            log(f"  WARNING: EDS cache is empty!")
+        # Log BASO usage
+        log(f"  === BASO Cache Usage ===")
+        log(f"  Total queries: {baso_hits['total_queries']}")
+        log(f"  GS hits: {baso_hits['GS']}, BS hits: {baso_hits['BS']}")
 
         # Write formulas
         log("Writing formulas...")
         last_row = write_row - 1
         
-        # sum_columns with updated layout (TR00 now has 9 columns, 641/642 shifted)
         sum_columns = ["R", "S", "T", "U", "V", "W", "X", "Y", "Z",
                       "AB", "AC", "AD", "AE", "AF", "AG", "AH", "AI", "AJ",
                       "AL", "AM", "AN", "AO", "AP", "AQ", "AR", "AS", "AT",
@@ -1102,15 +1113,13 @@ def main():
         
         sum_r3_bf3 = sum([totals.get(col, 0) for col in sum_columns if col != "BH"])
         s1_value = round(mb51_total_amount - sum_r3_bf3, 2)
-        
         ws["S1"] = s1_value
         log(f"  S1 = {s1_value:.2f}")
-        log(f"  S1 breakdown: MB51_total={mb51_total_amount:,.2f} - Columns_sum={sum_r3_bf3:,.2f}")
         
-        # BB2 formula (Transfer Stock total) - X, AH, AR, BB (updated from BA to BB)
+        # BB2 formula
         ws["BB2"] = "=X3+AH3+AR3+BB3"
         
-        # BP2 calculation (updated from BO2)
+        # BP2 calculation
         sum_bp = 0.0
         for row in range(9, write_row):
             cell_val = ws.cell(row=row, column=get_column_index("BP")).value
@@ -1134,7 +1143,7 @@ def main():
 
         # Formatting
         log("Formatting...")
-        for i in range(1, 80):
+        for i in range(1, 85):  # Extended untuk BASO columns
             ws.column_dimensions[get_column_letter(i)].width = 12
         
         ws.column_dimensions['Q'].width = 2
@@ -1143,17 +1152,18 @@ def main():
         ws.column_dimensions['AU'].width = 2
         ws.column_dimensions['BE'].width = 2
         ws.column_dimensions['BJ'].width = 4
+        ws.column_dimensions['CB'].width = 2  # Space before BASO
 
         ws.freeze_panes = "H9"
 
         for row in range(9, write_row):
-            for col in range(8, 80):
+            for col in range(8, 85):  # Extended untuk BASO
                 cell = ws.cell(row=row, column=col)
                 if isinstance(cell.value, (int, float)):
                     cell.number_format = '#,##0'
         
         for row in [2, 3]:
-            for col in range(18, 80):
+            for col in range(18, 85):  # Extended untuk BASO
                 ws.cell(row=row, column=col).number_format = '#,##0'
 
         # Save
@@ -1180,12 +1190,18 @@ def main():
                 "total_queries": eds_hits['total_queries'],
                 "gs_hits": eds_hits['GS'],
                 "bs_hits": eds_hits['BS']
-            }
+            },
+            "baso_hits": {
+                "total_queries": baso_hits['total_queries'],
+                "gs_hits": baso_hits['GS'],
+                "bs_hits": baso_hits['BS']
+            },
+            "baso_available": baso_path is not None
         }
         
         print(json.dumps(result))
         sys.stdout.flush()
-        log("✓ Report completed successfully using report_date from request body!")
+        log("✓ Report completed successfully with BASO support!")
 
     except Exception as e:
         tb = traceback.format_exc()

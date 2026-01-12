@@ -298,7 +298,7 @@ module.exports = {
   },
   deleteInventory: async (req, res) => {
     try {
-      const level = req.user.level
+      // const level = req.user.level
       const { listId } = req.body
       console.log(req.body)
       // if (level === 1) {
@@ -402,12 +402,12 @@ module.exports = {
   getAllReport: async (req, res) => {
     try {
       let { limit, page, search, sort, date, type } = req.query
-      let searchValue = ''
+      // let searchValue = ''
       let sortValue = ''
       if (typeof search === 'object') {
-        searchValue = Object.values(search)[0]
+        // searchValue = Object.values(search)[0]
       } else {
-        searchValue = search || ''
+        // searchValue = search || ''
       }
       if (typeof sort === 'object') {
         sortValue = Object.values(sort)[0]
@@ -475,7 +475,7 @@ module.exports = {
   },
   deleteReport: async (req, res) => {
     try {
-      const level = req.user.level
+      // const level = req.user.level
       const { listId } = req.body
       console.log(req.body)
       // if (level === 1) {
@@ -708,6 +708,7 @@ module.exports = {
                 path.join(__dirname, '../workers/generate_inventory_report.py')
               ])
 
+              // TAMBAHAN: Kirim report_date ke Python
               const payload = {
                 report_id: report.id,
                 files: {
@@ -715,16 +716,17 @@ module.exports = {
                   main: main.path
                 },
                 master_inventory: masterInventory.map(m => m.toJSON()),
-                master_movement: masterMovement.map(m => m.toJSON())
+                master_movement: masterMovement.map(m => m.toJSON()),
+                report_date: moment(date).format('YYYY-MM-DD') // TAMBAHKAN INI
               }
 
-              console.log(`[${plant}] Sending payload to Python`)
+              console.log(`[${plant}] Sending payload to Python with report_date:`, payload.report_date)
 
               py.stdin.write(JSON.stringify(payload))
               py.stdin.end()
 
               let stdoutData = ''
-              let stderrData = ''
+              // let stderrData = ''
 
               py.stdout.on('data', data => {
                 stdoutData += data.toString()
@@ -732,7 +734,7 @@ module.exports = {
               })
 
               py.stderr.on('data', data => {
-                stderrData += data.toString()
+                // stderrData += data.toString()
                 console.log(`[${plant}] Python stderr:`, data.toString())
               })
 
@@ -910,11 +912,15 @@ module.exports = {
 
               const mb51 = files.find(f => f.type === 'mb51')
               const main = files.find(f => f.type === 'main')
+              const baso = files.find(f => f.type === 'baso') // TAMBAHAN: Cari file BASO
 
               if (!mb51 || !main) {
                 resolve({ success: false, error: 'MB51 atau Main file belum diupload', plant })
                 return
               }
+
+              // BASO bersifat opsional - tidak wajib ada
+              // Jika ada, akan diproses. Jika tidak ada, kolom BASO akan kosong (0)
 
               // Buat record baru untuk hasil generate
               const report = await report_inven.create({
@@ -937,25 +943,26 @@ module.exports = {
                 path.join(__dirname, '../workers/generate_inventory_report.py')
               ])
 
-              // TAMBAHAN: Kirim report_date ke Python
+              // TAMBAHAN: Kirim report_date dan baso_path ke Python
               const payload = {
                 report_id: report.id,
                 files: {
                   mb51: mb51.path,
-                  main: main.path
+                  main: main.path,
+                  baso: baso ? baso.path : null // TAMBAHAN: Path BASO (null jika tidak ada)
                 },
                 master_inventory: masterInventory.map(m => m.toJSON()),
                 master_movement: masterMovement.map(m => m.toJSON()),
-                report_date: moment(date).format('YYYY-MM-DD') // TAMBAHKAN INI
+                report_date: moment(date).format('YYYY-MM-DD')
               }
 
               console.log(`[${plant}] Sending payload to Python with report_date:`, payload.report_date)
+              console.log(`[${plant}] BASO file:`, baso ? 'Available' : 'Not available')
 
               py.stdin.write(JSON.stringify(payload))
               py.stdin.end()
 
               let stdoutData = ''
-              let stderrData = ''
 
               py.stdout.on('data', data => {
                 stdoutData += data.toString()
@@ -963,7 +970,6 @@ module.exports = {
               })
 
               py.stderr.on('data', data => {
-                stderrData += data.toString()
                 console.log(`[${plant}] Python stderr:`, data.toString())
               })
 
