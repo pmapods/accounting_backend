@@ -3184,8 +3184,7 @@ module.exports = {
          FROM activities a
          LEFT JOIN Paths path ON path.activityId = a.id
          WHERE a.jenis_dokumen = :tipeValue
-         AND a.createdAt BETWEEN :timeFrom AND :timeTo
-         AND a.progress > 0`,
+         AND a.createdAt BETWEEN :timeFrom AND :timeTo`,
         { replacements: { tipeValue, timeFrom, timeTo }, type: sequelize.QueryTypes.SELECT }
       )
 
