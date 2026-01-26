@@ -3130,13 +3130,25 @@ module.exports = {
       const { level, kode: depoKode } = req.user
       const { from, to, tipe } = req.query
 
-      const timeFrom = from
-        ? moment(from).startOf('day').format('YYYY-MM-DD HH:mm:ss')
-        : moment().startOf('day').format('YYYY-MM-DD HH:mm:ss')
-      const timeTo = to
-        ? moment(to).endOf('day').format('YYYY-MM-DD HH:mm:ss')
-        : moment().endOf('day').format('YYYY-MM-DD HH:mm:ss')
+      let timeFrom, timeTo
+
       const tipeValue = tipe || 'daily'
+
+      if (tipeValue === 'monthly') {
+        timeFrom = from
+          ? moment(from).startOf('month').format('YYYY-MM-DD HH:mm:ss')
+          : moment().startOf('month').format('YYYY-MM-DD HH:mm:ss')
+        timeTo = to
+          ? moment(to).endOf('month').format('YYYY-MM-DD HH:mm:ss')
+          : moment().endOf('month').format('YYYY-MM-DD HH:mm:ss')
+      } else {
+        timeFrom = from
+          ? moment(from).startOf('day').format('YYYY-MM-DD HH:mm:ss')
+          : moment().startOf('day').format('YYYY-MM-DD HH:mm:ss')
+        timeTo = to
+          ? moment(to).endOf('day').format('YYYY-MM-DD HH:mm:ss')
+          : moment().endOf('day').format('YYYY-MM-DD HH:mm:ss')
+      }
 
       // Validasi body
       const schema = joi.object({
