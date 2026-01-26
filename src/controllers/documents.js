@@ -234,6 +234,9 @@ module.exports = {
       }
       if (!limit) {
         limit = 10
+      } else if (limit === 'all') {
+        const findAll = await documents.findAll()
+        limit = findAll.length
       } else {
         limit = parseInt(limit)
       }
@@ -455,7 +458,7 @@ module.exports = {
             const status = []
             for (let i = 1; i < rows.length; i++) {
               const a = rows[i]
-              plant.push(`Nama Dokumen ${a[0]} dan Status Depo ${a[3]}`)
+              plant.push(`Nama Dokumen ${a[0]} dan Status Depo ${a[3]} dan jenis dokumen ${a[1]}`)
               kode.push(`${a[0]}`)
               status.push(`${a[3]}`)
             }
