@@ -40,6 +40,8 @@ const picRoute = require('./routes/pic')
 const transRoute = require('./routes/transaction')
 const movementRoute = require('./routes/movement')
 const inventoryRoute = require('./routes/inventory')
+const salesConsoleRoute = require('./routes/salesconsole')
+
 const showRoute = require('./routes/show')
 
 // upload tax sales
@@ -65,6 +67,7 @@ app.use('/depo', authMiddleware, depoRoute)
 app.use('/pic', authMiddleware, picRoute)
 app.use('/movement', authMiddleware, movementRoute)
 app.use('/inventory', authMiddleware, inventoryRoute)
+app.use('/sales-console', authMiddleware, salesConsoleRoute)
 app.use('/show', showRoute)
 
 // upload sales tax
