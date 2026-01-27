@@ -478,59 +478,101 @@ module.exports = {
             if (result.length > 0) {
               return response(res, 'there is duplication in your file master', { result }, 404, false)
             } else {
-              const findDoc = await documents.findAll()
-              if (findDoc.length > 0 || findDoc.length === 0) {
-                const arr = []
-                for (let i = 0; i < findDoc.length; i++) {
-                  const findId = await documents.findByPk(findDoc[i].id)
-                  if (findId) {
-                    await findId.destroy()
-                    arr.push(findId)
-                  }
+              rows.shift()
+              const arr = []
+              for (let i = 0; i < rows.length; i++) {
+                const dataUpload = rows[i]
+                const data = {
+                  nama_dokumen: dataUpload[0],
+                  jenis_dokumen: dataUpload[1],
+                  divisi: dataUpload[2],
+                  status_depo: dataUpload[3],
+                  uploadedBy: dataUpload[4]
                 }
-                if (arr.length > 0) {
-                  rows.shift()
-                  const result = await sequelize.query(`INSERT INTO documents (nama_dokumen, jenis_dokumen, divisi, status_depo, uploadedBy) VALUES ${rows.map(a => '(?)').join(',')}`,
-                    {
-                      replacements: rows,
-                      type: QueryTypes.INSERT
-                    })
-                  if (result) {
-                    fs.unlink(dokumen, function (err) {
-                      if (err) throw err
-                      console.log('success')
-                    })
-                    return response(res, 'successfully upload file master')
-                  } else {
-                    fs.unlink(dokumen, function (err) {
-                      if (err) throw err
-                      console.log('success')
-                    })
-                    return response(res, 'failed to upload file', {}, 404, false)
+                const select = await documents.findOne({
+                  where: {
+                    [Op.and]: [
+                      { nama_dokumen: data.nama_dokumen },
+                      { jenis_dokumen: data.jenis_dokumen },
+                      { status_depo: data.status_depo }
+                    ]
                   }
+                })
+                if (select) {
+                  await select.update(data)
+                  arr.push(select)
                 } else {
-                  rows.shift()
-                  const result = await sequelize.query(`INSERT INTO documents (nama_dokumen, jenis_dokumen, divisi, status_depo, uploadedBy) VALUES ${rows.map(a => '(?)').join(',')}`,
-                    {
-                      replacements: rows,
-                      type: QueryTypes.INSERT
-                    })
-                  if (result) {
-                    fs.unlink(dokumen, function (err) {
-                      if (err) throw err
-                      console.log('success')
-                    })
-                    return response(res, 'successfully upload file master')
-                  } else {
-                    fs.unlink(dokumen, function (err) {
-                      if (err) throw err
-                      console.log('success')
-                    })
-                    return response(res, 'failed to upload file', {}, 404, false)
-                  }
+                  await documents.create(data)
+                  arr.push(data)
                 }
               }
+              if (arr.length > 0) {
+                fs.unlink(dokumen, function (err) {
+                  if (err) throw err
+                  console.log('success')
+                })
+                return response(res, 'successfully upload file master')
+              } else {
+                fs.unlink(dokumen, function (err) {
+                  if (err) throw err
+                  return response(res, 'successfully upload file master')
+                })
+              }
             }
+            // else {
+            //   const findDoc = await documents.findAll()
+            //   if (findDoc.length > 0 || findDoc.length === 0) {
+            //     const arr = []
+            //     for (let i = 0; i < findDoc.length; i++) {
+            //       const findId = await documents.findByPk(findDoc[i].id)
+            //       if (findId) {
+            //         await findId.destroy()
+            //         arr.push(findId)
+            //       }
+            //     }
+            //     if (arr.length > 0) {
+            //       rows.shift()
+            //       const result = await sequelize.query(`INSERT INTO documents (nama_dokumen, jenis_dokumen, divisi, status_depo, uploadedBy) VALUES ${rows.map(a => '(?)').join(',')}`,
+            //         {
+            //           replacements: rows,
+            //           type: QueryTypes.INSERT
+            //         })
+            //       if (result) {
+            //         fs.unlink(dokumen, function (err) {
+            //           if (err) throw err
+            //           console.log('success')
+            //         })
+            //         return response(res, 'successfully upload file master')
+            //       } else {
+            //         fs.unlink(dokumen, function (err) {
+            //           if (err) throw err
+            //           console.log('success')
+            //         })
+            //         return response(res, 'failed to upload file', {}, 404, false)
+            //       }
+            //     } else {
+            //       rows.shift()
+            //       const result = await sequelize.query(`INSERT INTO documents (nama_dokumen, jenis_dokumen, divisi, status_depo, uploadedBy) VALUES ${rows.map(a => '(?)').join(',')}`,
+            //         {
+            //           replacements: rows,
+            //           type: QueryTypes.INSERT
+            //         })
+            //       if (result) {
+            //         fs.unlink(dokumen, function (err) {
+            //           if (err) throw err
+            //           console.log('success')
+            //         })
+            //         return response(res, 'successfully upload file master')
+            //       } else {
+            //         fs.unlink(dokumen, function (err) {
+            //           if (err) throw err
+            //           console.log('success')
+            //         })
+            //         return response(res, 'failed to upload file', {}, 404, false)
+            //       }
+            //     }
+            //   }
+            // }
           } else {
             fs.unlink(dokumen, function (err) {
               if (err) throw err
