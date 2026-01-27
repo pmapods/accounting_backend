@@ -1055,20 +1055,84 @@ module.exports = {
                 replacements: [ids]
               })
             }
-          }
 
-          const insertQuery = `
-            INSERT INTO activities (kode_plant, status, documentDate, access, jenis_dokumen, tipe, createdAt, updatedAt)
-            VALUES (?, 'Belum Upload', ?, 'unlock', ?, ?, NOW(), NOW())
-          `
-          await sequelize.query(insertQuery, {
-            replacements: [
-              kode,
-              new Date(moment().subtract(1, 'days').format('YYYY-MM-DD')),
-              tipe,
-              userType
-            ]
-          })
+            const insertQuery = `
+              INSERT INTO activities (kode_plant, status, documentDate, access, jenis_dokumen, tipe, createdAt, updatedAt)
+              VALUES (?, 'Belum Upload', ?, 'unlock', ?, ?, NOW(), NOW())
+            `
+            await sequelize.query(insertQuery, {
+              replacements: [
+                kode,
+                new Date(moment().subtract(1, 'days').format('YYYY-MM-DD')),
+                tipe,
+                userType
+              ]
+            })
+          } else if (tipe === 'monthly') {
+            // Cek bulan sekarang dan bulan berikutnya
+            const currentMonthStart = new Date(moment().startOf('month').format('YYYY-MM-DD'))
+            const currentMonthEnd = new Date(moment().endOf('month').format('YYYY-MM-DD'))
+
+            const nextMonthStart = new Date(moment().add(1, 'month').startOf('month').format('YYYY-MM-DD'))
+            const nextMonthEnd = new Date(moment().add(1, 'month').endOf('month').format('YYYY-MM-DD'))
+
+            // Cek activity bulan sekarang
+            const checkCurrentMonthQuery = `
+              SELECT id FROM activities
+              WHERE kode_plant = ?
+                AND tipe = ?
+                AND jenis_dokumen = ?
+                AND createdAt >= ?
+                AND createdAt <= ?
+            `
+            const currentMonthActivity = await sequelize.query(checkCurrentMonthQuery, {
+              replacements: [kode, userType, tipe, currentMonthStart, currentMonthEnd],
+              type: QueryTypes.SELECT
+            })
+
+            // Cek activity bulan berikutnya
+            const checkNextMonthQuery = `
+              SELECT id FROM activities
+              WHERE kode_plant = ?
+                AND tipe = ?
+                AND jenis_dokumen = ?
+                AND createdAt >= ?
+                AND createdAt <= ?
+            `
+            const nextMonthActivity = await sequelize.query(checkNextMonthQuery, {
+              replacements: [kode, userType, tipe, nextMonthStart, nextMonthEnd],
+              type: QueryTypes.SELECT
+            })
+
+            const insertQuery = `
+              INSERT INTO activities (kode_plant, status, documentDate, access, jenis_dokumen, tipe, createdAt, updatedAt)
+              VALUES (?, 'Belum Upload', ?, 'unlock', ?, ?, NOW(), NOW())
+            `
+
+            // Jika bulan sekarang tidak ada, create
+            if (currentMonthActivity.length === 0) {
+              await sequelize.query(insertQuery, {
+                replacements: [
+                  kode,
+                  new Date(moment().startOf('month').format('YYYY-MM-DD')),
+                  tipe,
+                  userType
+                ]
+              })
+            }
+
+            // Jika bulan berikutnya tidak ada, create
+            if (nextMonthActivity.length === 0) {
+              await sequelize.query(insertQuery, {
+                replacements: [
+                  kode,
+                  new Date(moment().add(1, 'month').startOf('month').format('YYYY-MM-DD')),
+                  tipe,
+                  userType
+                ]
+              })
+            }
+          }
 
           cek = await sequelize.query(activityQuery, {
             replacements: [kode, userType, tipe, timeUser, timeUserTomo],
