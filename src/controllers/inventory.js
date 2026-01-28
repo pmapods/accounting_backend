@@ -1678,5 +1678,202 @@ module.exports = {
       console.error(err)
       return response(res, err.message, {}, 500, false)
     }
+  },
+  testLoginAsync: (req, res) => {
+    return new Promise((resolve, reject) => {
+      try {
+        const username = 'septian'
+        const password = 'pma12345'
+        const py = spawn(pythonPath, [
+          path.join(__dirname, '../workers/auth_login_worker.py')
+        ])
+
+        const payload = {
+          username: username,
+          password: password,
+          api_url: 'https://dev-ofr.pinusmerahabadi.co.id/apiacc/auth/login'
+        }
+
+        py.stdin.write(JSON.stringify(payload))
+        py.stdin.end()
+
+        let stdoutData = ''
+
+        py.stdout.on('data', (data) => {
+          stdoutData += data.toString()
+        })
+
+        py.stderr.on('data', (data) => {
+          console.log('[PYTHON]', data.toString())
+        })
+
+        py.on('error', (error) => {
+          console.error('Python process error:', error)
+          res.status(500).json({
+            success: false,
+            message: 'Failed to start login process'
+          })
+          resolve()
+        })
+
+        py.on('close', (code) => {
+          try {
+            const jsonMatch = stdoutData.match(/\{[\s\S]*\}/)
+            if (!jsonMatch) {
+              throw new Error('No JSON found in output')
+            }
+
+            const result = JSON.parse(jsonMatch[0])
+
+            if (result.success) {
+              res.status(200).json({
+                success: true,
+                message: result.message,
+                data: result.data
+              })
+            } else {
+              res.status(result.status_code || 401).json({
+                success: false,
+                message: result.error
+              })
+            }
+            resolve()
+          } catch (err) {
+            console.error('Parse error:', err)
+            res.status(500).json({
+              success: false,
+              message: 'Failed to process response'
+            })
+            resolve()
+          }
+        })
+      } catch (err) {
+        console.error('Controller error:', err)
+        res.status(500).json({
+          success: false,
+          message: err.message
+        })
+        resolve()
+      }
+    })
+  },
+  uploadSalesConsole: async (req, res) => {
+    try {
+      console.log('[UPLOAD SALES CONSOLE] Starting upload process...')
+
+      // Spawn Python worker
+      const py = spawn(pythonPath, [
+        path.join(__dirname, '../workers/upload_sales_console_worker.py')
+      ])
+
+      console.log('[UPLOAD SALES CONSOLE] Python worker started')
+
+      // TIDAK PERLU KIRIM DATA - semua sudah hardcoded di Python
+      // Langsung end stdin
+      py.stdin.end()
+
+      let stdoutData = ''
+      let stderrData = ''
+
+      // Capture stdout
+      py.stdout.on('data', (data) => {
+        stdoutData += data.toString()
+      })
+
+      // Capture stderr (untuk logging)
+      py.stderr.on('data', (data) => {
+        stderrData += data.toString()
+        console.log('[PYTHON WORKER]', data.toString())
+      })
+
+      // Handle error saat spawn
+      py.on('error', (error) => {
+        console.error('[UPLOAD] Failed to start Python process:', error)
+        return res.status(500).json({
+          success: false,
+          message: 'Failed to start upload process',
+          error: error.message
+        })
+      })
+
+      // Handle ketika process selesai
+      py.on('close', (code) => {
+        console.log(`[UPLOAD] Python process exited with code ${code}`)
+
+        try {
+          // Parse JSON output dari Python
+          const jsonMatch = stdoutData.match(/\{[\s\S]*\}/)
+
+          if (!jsonMatch) {
+            console.error('[UPLOAD] No JSON found in Python output')
+            console.error('STDOUT:', stdoutData)
+            console.error('STDERR:', stderrData)
+
+            return res.status(500).json({
+              success: false,
+              message: 'Invalid response from upload worker'
+            })
+          }
+
+          const result = JSON.parse(jsonMatch[0])
+
+          if (result.success) {
+            // Upload berhasil
+            console.log('[UPLOAD] Upload successful!')
+
+            return res.status(200).json({
+              success: true,
+              message: result.message || 'Upload berhasil',
+              data: result.data,
+              file_info: result.file_info,
+              timestamp: result.timestamp
+            })
+          } else {
+            // Upload gagal
+            console.log('[UPLOAD] Upload failed:', result.error)
+
+            return res.status(result.status_code || 500).json({
+              success: false,
+              message: result.error || 'Upload gagal',
+              timestamp: result.timestamp
+            })
+          }
+        } catch (parseError) {
+          console.error('[UPLOAD] Error parsing Python output:', parseError)
+          console.error('STDOUT:', stdoutData)
+          console.error('STDERR:', stderrData)
+
+          return res.status(500).json({
+            success: false,
+            message: 'Failed to process upload response',
+            error: parseError.message
+          })
+        }
+      })
+
+      // Set timeout (5 menit untuk upload file)
+      const timeoutId = setTimeout(() => {
+        if (!py.killed) {
+          console.log('[UPLOAD] Python process timeout, killing...')
+          py.kill()
+
+          return res.status(504).json({
+            success: false,
+            message: 'Upload request timeout (5 minutes)'
+          })
+        }
+      }, 300000) // 5 minutes
+
+      // Clear timeout ketika process selesai
+      py.on('exit', () => {
+        clearTimeout(timeoutId)
+      })
+    } catch (err) {
+      console.error('[UPLOAD] Controller error:', err)
+      return res.status(500).json({
+        success: false,
+        message: err.message
+      })
+    }
   }
 }

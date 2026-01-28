@@ -20,4 +20,8 @@ route.get('/report/detail/:id', inventory.getDetailReport)
 route.patch('/report/generate', inventory.generateInventoryReport)
 route.patch('/report/merge', inventory.mergeInventoryReports)
 
+// sales console
+route.post('/testlogin', inventory.testLoginAsync)
+route.post('/testupload', inventory.uploadSalesConsole)
+
 module.exports = route

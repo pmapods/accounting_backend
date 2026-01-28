@@ -1152,8 +1152,8 @@ module.exports = {
           WHERE a.kode_plant IN (?)
             ${tipeCondition}
             AND a.jenis_dokumen LIKE ?
-            AND a.createdAt > ?
-            AND a.createdAt < ?
+            AND a.documentDate > ?
+            AND a.documentDate < ?
         `
 
         // QUERY 2: Ambil semua depos data (sudah ada dari pic query, tapi kita perlu struktur clean)
