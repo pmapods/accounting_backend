@@ -1144,6 +1144,8 @@ module.exports = {
           tipeCondition = 'AND a.tipe = ?'
         }
 
+        const dateField = tipe === 'monthly' ? 'a.documentDate' : 'a.createdAt'
+
         // QUERY 1: Ambil activity IDs yang punya paths (uploaded)
         const uploadedActivityQuery = `
           SELECT DISTINCT a.id, a.kode_plant, a.tipe
@@ -1152,8 +1154,8 @@ module.exports = {
           WHERE a.kode_plant IN (?)
             ${tipeCondition}
             AND a.jenis_dokumen LIKE ?
-            AND a.documentDate > ?
-            AND a.documentDate < ?
+            AND ${dateField} > ?
+            AND ${dateField} < ?
         `
 
         // QUERY 2: Ambil semua depos data (sudah ada dari pic query, tapi kita perlu struktur clean)
